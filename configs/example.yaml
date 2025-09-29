@@ -1,0 +1,21 @@
+---
+input_path: "data/AP231_1.tif"
+save_prefix: "outputs/AP231_1"
+mode: "fiji_mip"
+
+channels:
+  mapping:
+    DAPI: 0
+    Alexa488: 1
+    Cy3: 2
+
+stardist:
+  run: true
+  channel: "DAPI"
+  model: "2D_versatile_fluo"
+  prob_thresh: 0.579071
+  nms_thresh: 0.30
+  normalize_percentiles: [2.0, 98.5]
+
+fiji:
+  app_dir: "C:/Fiji.app"

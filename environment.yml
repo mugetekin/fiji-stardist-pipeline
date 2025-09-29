@@ -1,0 +1,22 @@
+name: fiji-stardist
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy=1.26.4
+  - openjdk=17
+  - jpype1=1.5.0
+  - pyimagej=1.5.0
+  - scyjava=1.9.1
+  - scikit-image
+  - tifffile
+  - matplotlib
+  - pandas
+  - pyyaml
+  - pip
+  - pip:
+      - tensorflow-cpu==2.15.*
+      - csbdeep==0.7.4
+      - stardist==0.8.5
+      - oiffile
