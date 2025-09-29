@@ -6,9 +6,9 @@ This project provides a reproducible pipeline for microscopy images in OIB/OIF/T
 
 
 
-\- \*\*Max Intensity Projection (ZProject MAX)\*\* using Fiji  
+\- **Max Intensity Projection (ZProject MAX)** using Fiji  
 
-\- \*\*StarDist\*\* nucleus segmentation on the DAPI channel  
+\- **StarDist** nucleus segmentation on the DAPI channel  
 
 \- Measurement of nuclei (area, centroid, bounding box)  
 
