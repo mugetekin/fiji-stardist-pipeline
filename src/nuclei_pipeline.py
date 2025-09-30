@@ -8,24 +8,90 @@ from tifffile import imread as tifread, imwrite as tifsave
 
 
 # ---------- IO ----------
-def read_oib_oif_to_ZCYX(path: str) -> np.ndarray:
-    from oiffile import OifFile
-    with OifFile(path) as o:
-        s = o.series[0]
-        axes = s.axes or ""
-        arr = s.asarray()
+def read_tiff_to_ZCYX(path: str) -> np.ndarray:
+    """
+    Read a multi-dimensional TIFF and return (Z, C, Y, X) float32.
+    Handles common axis orders like ZCYX, CZYX, ZYX, YXC, YX.
+    Tries to use tifffile's axes metadata; falls back to heuristics.
+    """
+    import tifffile as tiff
+
+    with tiff.TiffFile(path) as tf:
+        # Prefer first series
+        s = tf.series[0]
+        axes = getattr(s, "axes", "") or ""
+        arr = s.asarray()  # lazy-reads the series with correct shape
     arr = np.asarray(arr)
-    # hedef: (Z,C,Y,X)
-    if "Y" in axes and "X" in axes:
-        y_pos, x_pos = axes.find("Y"), axes.find("X")
-        arr = np.moveaxis(arr, (y_pos, x_pos), (-2, -1))
+
+    # If axes are known, map to (Z, C, Y, X)
+    # We only care about Z, C, Y, X; ignore others (e.g., T) by squeezing/merging
+    axes = axes.upper()
+    if axes:
+        # Build a list of dims that exist
+        dims = list(axes)
+        data = arr
+        # Ensure Y and X are last two dims (if present)
+        if "Y" in dims and "X" in dims:
+            y_idx, x_idx = dims.index("Y"), dims.index("X")
+            target_order = [d for d in dims if d not in ("Y", "X")] + ["Y", "X"]
+            perm = [dims.index(d) for d in target_order]
+            data = np.moveaxis(data, range(data.ndim), perm)
+            dims = target_order
+        else:
+            # Assume last 2 are Y,X
+            pass
+
+        # Insert missing Z and/or C dims as singleton axes at front
+        if "Z" not in dims:
+            data = np.expand_dims(data, 0)
+            dims = ["Z"] + dims
+        if "C" not in dims:
+            data = np.expand_dims(data, 1)
+            dims = [dims[0]] + ["C"] + dims[1:]
+
+        # Now move to (Z,C,*,Y,X) then squeeze extras in the middle if any
+        z_idx, c_idx = dims.index("Z"), dims.index("C")
+        # bring Z->0, C->1
+        order = [z_idx, c_idx] + [i for i, d in enumerate(dims) if d not in ("Z", "C")]
+        data = np.moveaxis(data, range(data.ndim), order)
+
+        # ensure Y,X are last two
+        if data.ndim < 4:
+            # pad if somehow too small
+            if data.ndim == 3:
+                data = data[:, :, np.newaxis, :]
+                if data.shape[-1] > 1:
+                    # best-effort; real-world TIFFs we use above should not hit here
+                    pass
+
+        # If we still have extra dims between C and Y, squeeze them (take first)
+        while data.ndim > 4:
+            data = data.take(indices=0, axis=2)
+
+        out = data
     else:
-        arr = np.moveaxis(arr, (-2, -1), (-2, -1))
-    if "Z" not in axes:
-        arr = arr[np.newaxis, ...]
-    if "C" not in axes:
-        arr = np.expand_dims(arr, 1)
-    return arr.astype(np.float32)
+        # No axes metadata → heuristics
+        a = arr
+        if a.ndim == 4:
+            # Common cases: (Z,C,Y,X) or (C,Z,Y,X). Heuristic: if first dim <=5, it's probably C.
+            if a.shape[0] <= 5:
+                a = np.moveaxis(a, 0, 1)  # (C,Z,Y,X) -> (Z,C,Y,X)
+            # else assume already (Z,C,Y,X)
+            out = a
+        elif a.ndim == 3:
+            # Either (Z,Y,X) or (Y,X,C)
+            if a.shape[-1] in (3, 4):          # (Y,X,C)
+                a = np.moveaxis(a, -1, 0)[np.newaxis, ...]  # -> (1,C,Y,X)
+                out = np.moveaxis(a, 0, 1)                  # -> (1,C,Y,X) already; keep Z=1
+            else:                                # (Z,Y,X)
+                out = a[:, np.newaxis, ...]      # -> (Z,1,Y,X)
+        elif a.ndim == 2:
+            out = a[np.newaxis, np.newaxis, ...]  # -> (1,1,Y,X)
+        else:
+            # fallback
+            out = np.asarray(a)[np.newaxis, np.newaxis, ...]
+
+    return out.astype(np.float32)
 
 def read_tiff_to_ZCYX(path: str) -> np.ndarray:
     a = tifread(path); a = np.asarray(a)
