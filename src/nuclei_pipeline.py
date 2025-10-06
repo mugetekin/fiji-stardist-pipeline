@@ -1,259 +1,327 @@
-import os, sys, argparse, yaml
+import argparse
+import os
+from pathlib import Path
+import yaml
+
 import numpy as np
-from typing import Optional, Dict
-from skimage import exposure, img_as_ubyte, io as skio
+import matplotlib.pyplot as plt
 from skimage.restoration import rolling_ball
-from skimage.measure import regionprops_table
-from tifffile import imread as tifread, imwrite as tifsave
+from skimage import exposure, img_as_ubyte
+import tifffile
+
+# Prefer imageio for writing; fall back to skimage if needed.
+try:
+    import imageio.v3 as iio
+    _HAS_IMAGEIO = True
+except Exception:
+    from skimage import io as skio
+    _HAS_IMAGEIO = False
 
 
-# ---------- IO ----------
-def read_tiff_to_ZCYX(path: str) -> np.ndarray:
+# ---------------- helpers ----------------
+def _normalize01(img: np.ndarray) -> np.ndarray:
+    img = img.astype(np.float32)
+    vmin, vmax = float(img.min()), float(img.max())
+    if vmax <= vmin + 1e-12:
+        return np.zeros_like(img, dtype=np.float32)
+    return (img - vmin) / (vmax - vmin)
+
+
+def process_zstack_slice(channel_stack: np.ndarray, z_index="middle", rolling_radius=50) -> np.ndarray:
     """
-    Read a multi-dimensional TIFF and return (Z, C, Y, X) float32.
-    Handles common axis orders like ZCYX, CZYX, ZYX, YXC, YX.
-    Tries to use tifffile's axes metadata; falls back to heuristics.
+    channel_stack: (Z, Y, X)
+    z_index: "middle" | int | None (MIP)
     """
-    import tifffile as tiff
-
-    with tiff.TiffFile(path) as tf:
-        # Prefer first series
-        s = tf.series[0]
-        axes = getattr(s, "axes", "") or ""
-        arr = s.asarray()  # lazy-reads the series with correct shape
-    arr = np.asarray(arr)
-
-    # If axes are known, map to (Z, C, Y, X)
-    # We only care about Z, C, Y, X; ignore others (e.g., T) by squeezing/merging
-    axes = axes.upper()
-    if axes:
-        # Build a list of dims that exist
-        dims = list(axes)
-        data = arr
-        # Ensure Y and X are last two dims (if present)
-        if "Y" in dims and "X" in dims:
-            y_idx, x_idx = dims.index("Y"), dims.index("X")
-            target_order = [d for d in dims if d not in ("Y", "X")] + ["Y", "X"]
-            perm = [dims.index(d) for d in target_order]
-            data = np.moveaxis(data, range(data.ndim), perm)
-            dims = target_order
-        else:
-            # Assume last 2 are Y,X
-            pass
-
-        # Insert missing Z and/or C dims as singleton axes at front
-        if "Z" not in dims:
-            data = np.expand_dims(data, 0)
-            dims = ["Z"] + dims
-        if "C" not in dims:
-            data = np.expand_dims(data, 1)
-            dims = [dims[0]] + ["C"] + dims[1:]
-
-        # Now move to (Z,C,*,Y,X) then squeeze extras in the middle if any
-        z_idx, c_idx = dims.index("Z"), dims.index("C")
-        # bring Z->0, C->1
-        order = [z_idx, c_idx] + [i for i, d in enumerate(dims) if d not in ("Z", "C")]
-        data = np.moveaxis(data, range(data.ndim), order)
-
-        # ensure Y,X are last two
-        if data.ndim < 4:
-            # pad if somehow too small
-            if data.ndim == 3:
-                data = data[:, :, np.newaxis, :]
-                if data.shape[-1] > 1:
-                    # best-effort; real-world TIFFs we use above should not hit here
-                    pass
-
-        # If we still have extra dims between C and Y, squeeze them (take first)
-        while data.ndim > 4:
-            data = data.take(indices=0, axis=2)
-
-        out = data
-    else:
-        # No axes metadata → heuristics
-        a = arr
-        if a.ndim == 4:
-            # Common cases: (Z,C,Y,X) or (C,Z,Y,X). Heuristic: if first dim <=5, it's probably C.
-            if a.shape[0] <= 5:
-                a = np.moveaxis(a, 0, 1)  # (C,Z,Y,X) -> (Z,C,Y,X)
-            # else assume already (Z,C,Y,X)
-            out = a
-        elif a.ndim == 3:
-            # Either (Z,Y,X) or (Y,X,C)
-            if a.shape[-1] in (3, 4):          # (Y,X,C)
-                a = np.moveaxis(a, -1, 0)[np.newaxis, ...]  # -> (1,C,Y,X)
-                out = np.moveaxis(a, 0, 1)                  # -> (1,C,Y,X) already; keep Z=1
-            else:                                # (Z,Y,X)
-                out = a[:, np.newaxis, ...]      # -> (Z,1,Y,X)
-        elif a.ndim == 2:
-            out = a[np.newaxis, np.newaxis, ...]  # -> (1,1,Y,X)
-        else:
-            # fallback
-            out = np.asarray(a)[np.newaxis, np.newaxis, ...]
-
-    return out.astype(np.float32)
-
-def read_tiff_to_ZCYX(path: str) -> np.ndarray:
-    a = tifread(path); a = np.asarray(a)
-    if a.ndim == 4:
-        if a.shape[0] <= 5:  # (C,Z,Y,X) -> (Z,C,Y,X)
-            a = np.moveaxis(a, 0, 1)
-    elif a.ndim == 3:
-        if a.shape[-1] in (3,4):   # (Y,X,C) -> (1,C,Y,X)
-            a = np.moveaxis(a, -1, 0)[np.newaxis, ...]
-        else:                       # (Z,Y,X) -> (Z,1,Y,X)
-            a = a[:, np.newaxis, ...]
-    else:
-        a = a[np.newaxis, np.newaxis, ...]
-    return a.astype(np.float32)
-
-def infer_channel_indices(C: int) -> Dict[str,int]:
-    return {"DAPI": 0 if C>=1 else None, "Alexa488": 1 if C>=2 else None, "Cy3": 2 if C>=3 else None}
-
-# ---------- Fiji ----------
-def init_imagej(fiji_app_dir: Optional[str]):
-    import imagej
-    import scyjava
-
-    # --- scyjava options: support both new and old API ---
-    add_opt = getattr(scyjava, "add_option", None)
-    if callable(add_opt):
-        scyjava.add_option("-Dimagej.legacy.enabled=true")
-    else:
-        # old API path
-        try:
-            from scyjava import config as sjcfg
-            sjcfg.add_option("-Dimagej.legacy.enabled=true")
-        except Exception as e:
-            print("Warning: could not set scyjava option via either API:", e)
-
-    # --- init ImageJ from local Fiji (recommended on Windows) ---
-    if fiji_app_dir:
-        return imagej.init(fiji_app_dir, mode="headless", add_legacy=True)
-    else:
-        # fallback to Maven (requires JDK & network)
-        return imagej.init("sc.fiji:fiji", mode="headless", add_legacy=True)
-
-
-def fiji_max_intensity(ij, np_stack_ZYX: np.ndarray) -> np.ndarray:
-    import scyjava
-    ZProjector = scyjava.jimport("ij.plugin.ZProjector")
-    img = ij.py.to_img(np_stack_ZYX.astype(np.float32))
-    imp = ij.py.to_imageplus(img)
-    zp = ZProjector(imp)
-    zp.setMethod(ZProjector.MAX_METHOD)
-    zp.setStartSlice(1); zp.setStopSlice(imp.getNSlices()); zp.doProjection()
-    mip_imp = zp.getProjection()
-    mip = ij.py.from_java(mip_imp)
-    mip = np.asarray(mip, dtype=np.float32)
-    vmin, vmax = float(mip.min()), float(mip.max())
-    return np.zeros_like(mip, dtype=np.float32) if vmax<=vmin+1e-12 else (mip-vmin)/(vmax-vmin)
-
-# ---------- Processing ----------
-def process_channel(stack_ZYX: np.ndarray, z_index, rolling_radius=50, ij=None) -> np.ndarray:
-    Z = stack_ZYX.shape[0]
+    Z = channel_stack.shape[0]
     if z_index == "middle":
-        img = stack_ZYX[Z//2]
+        zi = Z // 2
+        img = channel_stack[zi]
     elif isinstance(z_index, int):
-        zi = max(0, min(Z-1, z_index)); img = stack_ZYX[zi]
-    else:
-        img = fiji_max_intensity(ij, stack_ZYX) if ij is not None else stack_ZYX.max(axis=0)
+        zi = max(0, min(Z - 1, z_index))
+        img = channel_stack[zi]
+    else:  # None => MIP
+        img = channel_stack.max(axis=0)
+
+    # background subtraction (rolling ball)
     bg = rolling_ball(img, radius=rolling_radius)
-    img_corr = img - bg; img_corr[img_corr<0] = 0
-    return exposure.rescale_intensity(img_corr, out_range=(0,1)).astype(np.float32)
+    img_corr = img - bg
+    img_corr[img_corr < 0] = 0.0
+    return exposure.rescale_intensity(img_corr, out_range=(0, 1)).astype(np.float32)
 
-def save_previews(dapi, alexa, cy3, prefix):
+
+def infer_channel_indices(C: int):
+    """Simple assumption: 0=DAPI(Blue), 1=Alexa488(Green), 2=Cy3(Red)."""
+    dapi = 0 if C >= 1 else None
+    alexa = 1 if C >= 2 else None
+    cy3 = 2 if C >= 3 else None
+    return dapi, alexa, cy3
+
+
+def _ensure_parent_dir(path: Path):
+    parent = path.parent
+    if str(parent) not in ("", "."):
+        parent.mkdir(parents=True, exist_ok=True)
+
+
+def _imwrite_safe(path: Path, arr_uint8: np.ndarray):
+    """Write RGB uint8 image via imageio if available, else skimage.io."""
+    _ensure_parent_dir(path)
+    try:
+        if _HAS_IMAGEIO:
+            iio.imwrite(str(path), arr_uint8)
+        else:
+            from skimage import io as skio
+            skio.imsave(str(path), arr_uint8)
+    except Exception as e:
+        raise RuntimeError(f"Failed to save image to '{path}': {e}")
+    if not path.exists():
+        print(f"[WARN] Save reported ok, but file not found on disk: {path}")
+
+
+def _to_uint8(img01: np.ndarray) -> np.ndarray:
+    """[0,1] float -> uint8"""
+    return img_as_ubyte(np.clip(img01, 0, 1))
+
+
+def show_channels_colorized(dapi, alexa, cy3, save_prefix="TEST"):
+    """
+    Show & save each channel in its own color (Blue/Green/Red) and also RGB merge.
+    dapi/alexa/cy3: [0,1] normalized 2D numpy arrays (or None)
+    """
+    imgs, titles = [], []
+    saved_paths = []
+
+    # Base path objects
+    base = Path(save_prefix).resolve()
+
+    # DAPI (Blue)
     if dapi is not None:
-        skio.imsave(f"{prefix}_DAPI_blue.jpg", img_as_ubyte(np.dstack([np.zeros_like(dapi), np.zeros_like(dapi), dapi])), check_contrast=False)
+        rgb = np.zeros((*dapi.shape, 3), dtype=np.float32)
+        rgb[..., 2] = dapi
+        imgs.append(rgb); titles.append("DAPI (Blue)")
+        p = Path(f"{save_prefix}_DAPIcolor.jpg").resolve()
+        _imwrite_safe(p, _to_uint8(rgb)); saved_paths.append(p)
+
+    # Alexa (Green)
     if alexa is not None:
-        skio.imsave(f"{prefix}_Alexa488_green.jpg", img_as_ubyte(np.dstack([np.zeros_like(alexa), alexa, np.zeros_like(alexa)])), check_contrast=False)
+        rgb = np.zeros((*alexa.shape, 3), dtype=np.float32)
+        rgb[..., 1] = alexa
+        imgs.append(rgb); titles.append("Alexa488 (Green)")
+        p = Path(f"{save_prefix}_Alexacolor.jpg").resolve()
+        _imwrite_safe(p, _to_uint8(rgb)); saved_paths.append(p)
+
+    # Cy3 (Red)
     if cy3 is not None:
-        skio.imsave(f"{prefix}_Cy3_red.jpg", img_as_ubyte(np.dstack([cy3, np.zeros_like(cy3), np.zeros_like(cy3)])), check_contrast=False)
-    ref = next(x for x in [dapi, alexa, cy3] if x is not None)
-    H,W = ref.shape; merge = np.zeros((H,W,3), dtype=np.float32)
-    if cy3   is not None: merge[...,0]=cy3
-    if alexa is not None: merge[...,1]=alexa
-    if dapi  is not None: merge[...,2]=dapi
-    skio.imsave(f"{prefix}_RGBmerge.jpg", img_as_ubyte(merge), check_contrast=False)
+        rgb = np.zeros((*cy3.shape, 3), dtype=np.float32)
+        rgb[..., 0] = cy3
+        imgs.append(rgb); titles.append("Cy3 (Red)")
+        p = Path(f"{save_prefix}_Cy3color.jpg").resolve()
+        _imwrite_safe(p, _to_uint8(rgb)); saved_paths.append(p)
 
-# ---------- StarDist ----------
-def _normalize_percentile(img: np.ndarray, lo=2.0, hi=98.5) -> np.ndarray:
-    lo, hi = np.percentile(img, [lo, hi]).astype(np.float32)
-    if hi<=lo+1e-12: return np.zeros_like(img, dtype=np.float32)
-    x = (img-lo)/(hi-lo); x[x<0]=0; x[x>1]=1; return x.astype(np.float32)
+    # RGB merge
+    ref = dapi if dapi is not None else (alexa if alexa is not None else cy3)
+    if ref is None:
+        raise ValueError("No channels to display; all are None.")
+    H, W = ref.shape
+    merge = np.zeros((H, W, 3), dtype=np.float32)
+    if cy3 is not None:   merge[..., 0] = cy3
+    if alexa is not None: merge[..., 1] = alexa
+    if dapi is not None:  merge[..., 2] = dapi
+    imgs.append(merge); titles.append("RGB Merge (DAPI=Blue, Alexa=Green, Cy3=Red)")
 
-def run_stardist_2d(dapi_img01: np.ndarray, model_name="2D_versatile_fluo",
-                    prob=0.579071, nms=0.30, pct=(2.0,98.5)) -> np.ndarray:
-    from stardist.models import StarDist2D
-    x = _normalize_percentile(dapi_img01, *pct)
-    model = StarDist2D.from_pretrained(model_name)
-    labels, details = model.predict_instances(x, prob_thresh=float(prob), nms_thresh=float(nms))
-    return labels.astype(np.uint16)
+    # Save merge as JPG (and also as TIFF if you like—commented out)
+    p_merge_jpg = Path(f"{save_prefix}_RGBmerge.jpg").resolve()
+    _imwrite_safe(p_merge_jpg, _to_uint8(merge)); saved_paths.append(p_merge_jpg)
+    # p_merge_tif = Path(f"{save_prefix}_RGBmerge.tif").resolve()
+    # tifffile.imwrite(str(p_merge_tif), _to_uint8(merge))
+    # saved_paths.append(p_merge_tif)
 
-def measure_labels(labels: np.ndarray):
-    import pandas as pd
-    props = regionprops_table(labels, properties=("label","area","centroid","bbox"))
-    return pd.DataFrame(props)
+    # display
+    n = len(imgs)
+    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4))
+    if n == 1:
+        axes = [axes]
+    for ax, img, ttl in zip(axes, imgs, titles):
+        ax.imshow(img)
+        ax.set_title(ttl)
+        ax.axis("off")
+    plt.tight_layout()
+    plt.show()
 
-# ---------- CLI ----------
+    print("Saved files:")
+    for p in saved_paths:
+        print(" -", p)
+
+# -------- path resolution --------
+def _strip_leading_slashes(p: str) -> str:
+    # Avoid absolute path from accidental leading '/' or '\'
+    if p.startswith("\\") or p.startswith("/"):
+
+        return p.lstrip("\\/")  # make relative
+    return p
+
+
+def resolve_input_path(user_path: str | os.PathLike) -> Path:
+    """
+    Try to resolve input path robustly on Windows/Linux:
+    - Accept absolute paths as-is (if they exist).
+    - If the path starts with '/' or '\\', strip and treat as relative.
+    - Try relative to CWD, script dir, and project root (script_dir/..).
+    """
+    candidates: list[Path] = []
+    raw = Path(str(user_path))
+    if raw.is_absolute() and raw.is_file():
+        return raw
+
+    stripped = Path(_strip_leading_slashes(str(raw)))
+
+    cwd = Path.cwd()
+    script_dir = Path(__file__).resolve().parent
+    project_root = script_dir.parent  # assuming src/ layout
+
+    for base in [cwd, script_dir, project_root]:
+        candidates.append((base / stripped).resolve())
+
+    # Also try as-is (relative to CWD)
+    candidates.append((cwd / raw).resolve())
+
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+
+    tried = "\n  - ".join(str(c) for c in dict.fromkeys(candidates))
+    raise FileNotFoundError(
+        f"TIFF not found. I tried resolving these locations:\n  - {tried}\n"
+        "Tip: In configs, prefer relative paths like 'data/AP231_1.tif' (without a leading slash)."
+    )
+
+
+# -------- main processing --------
+def show_channels_from_tiff(path, z_index="middle", rolling_radius=50, save_prefix="TEST"):
+    """
+    Open multi-channel TIFF from Fiji; take DAPI/Alexa/Cy3 slice (or z_index/MIP),
+    background-subtract (rolling ball), colorize + merge, and save.
+    Returns: (dapi, alexa, cy3) as [0,1] float32 arrays (or None if channel missing).
+    """
+    resolved_path = resolve_input_path(path)
+    print("Resolved TIFF path:", resolved_path)
+
+    arr = tifffile.imread(str(resolved_path))  # (Z,C,Y,X) or (C,Z,Y,X) or other
+    print("Original TIFF shape:", arr.shape)
+
+    # Axis fix: if first axis is channels (<=5), move to (Z,C,Y,X)
+    if arr.ndim == 4 and arr.shape[0] <= 5:
+        arr = np.moveaxis(arr, 0, 1)  # -> (Z,C,Y,X)
+
+    if arr.ndim != 4:
+        raise ValueError(f"Expected a 4D stack, got shape {arr.shape}")
+
+    Z, C, Y, X = arr.shape
+    dapi_c, alexa_c, cy3_c = infer_channel_indices(C)
+
+    dapi = alexa = cy3 = None
+    if dapi_c is not None and dapi_c < C:
+        dapi = process_zstack_slice(arr[:, dapi_c], z_index, rolling_radius)
+    if alexa_c is not None and alexa_c < C:
+        alexa = process_zstack_slice(arr[:, alexa_c], z_index, rolling_radius)
+    if cy3_c is not None and cy3_c < C:
+        cy3 = process_zstack_slice(arr[:, cy3_c], z_index, rolling_radius)
+
+    # Ensure output dir exists for the prefix
+    _ensure_parent_dir(Path(save_prefix))
+
+    show_channels_colorized(dapi, alexa, cy3, save_prefix=save_prefix)
+    return dapi, alexa, cy3
+
+
+# -------- CLI / config --------
+def parse_args():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", type=str, required=False, help="YAML config file")
+    ap.add_argument("--input_path", type=str, required=False, help="TIFF path (overrides config)")
+    ap.add_argument("--save_prefix", type=str, required=False, help="Prefix for saved images")
+    ap.add_argument("--mode", type=str, default=None,
+                    help="z selection: 'middle' (default), 'mip'/'none' for MIP, or 'z=<int>'")
+    ap.add_argument("--rolling_radius", type=int, default=None, help="Rolling-ball radius")
+    return ap.parse_args()
+
+
+def load_config(path: str | None):
+    if not path:
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def parse_mode_to_zindex(mode_str: str | None):
+    if not mode_str or mode_str.lower() == "middle":
+        return "middle"
+    m = mode_str.lower()
+    if m in ("mip", "none"):
+        return None
+    if m.startswith("z="):
+        try:
+            return int(m.split("=", 1)[1])
+        except Exception:
+            pass
+    # fallback
+    return "middle"
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Fiji MIP + StarDist + measurement pipeline")
-    ap.add_argument("--config", type=str, required=True, help="YAML config path")
-    args = ap.parse_args()
+    args = parse_args()
+    cfg = load_config(args.config)
 
-    with open(args.config, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    # Gather parameters with precedence: CLI > config > defaults
+    input_path = args.input_path or cfg.get("input_path")
+    save_prefix = args.save_prefix or cfg.get("save_prefix", "outputs/AP231_1")
+    mode = args.mode or cfg.get("mode", "middle")
+    rolling_radius = args.rolling_radius if args.rolling_radius is not None else cfg.get("rolling_radius", 50)
 
-    inp = cfg["input_path"]
-    prefix = cfg["save_prefix"]
-    os.makedirs(os.path.dirname(prefix), exist_ok=True)
+    if not input_path:
+        raise SystemExit("Please provide --input_path or set 'input_path' in the config YAML.")
 
-    mode = cfg.get("mode","fiji_mip")
-    chmap = cfg.get("channels",{}).get("mapping", {"DAPI":0,"Alexa488":1,"Cy3":2})
-    stc = cfg.get("stardist", {})
-    sd_run = stc.get("run", True)
-    sd_channel = stc.get("channel","DAPI")
-    sd_idx = chmap.get(sd_channel,0) if isinstance(sd_channel,str) else int(sd_channel)
-    fiji_dir = cfg.get("fiji",{}).get("app_dir", None)
+    z_index = parse_mode_to_zindex(mode)
 
-    # read
-    if inp.lower().endswith((".oib",".oif")):
-        stack = read_oib_oif_to_ZCYX(inp)
+    print("[pipeline] config:", args.config or "(none)")
+    print("[pipeline] input_path:", input_path)
+    print("[pipeline] save_prefix:", save_prefix)
+    print("[pipeline] mode:", "mip" if z_index is None else z_index)
+    dapi, alexa, cy3 = show_channels_from_tiff(
+        input_path,
+        z_index=z_index,
+        rolling_radius=rolling_radius,
+        save_prefix=save_prefix,
+    )
+    print("Preview images saved with prefix:", Path(save_prefix).resolve())
+
+    # ----------------------------
+    # Optional post-count analysis
+    # ----------------------------
+    analysis_cfg = cfg.get("analysis", {}) if isinstance(cfg, dict) else {}
+
+    # Prefix variable used by post_analysis
+    prefix = save_prefix
+
+    if analysis_cfg.get("run", False):
+        # Require the StarDist label file to exist; otherwise skip gracefully
+        label_path = f"{prefix}_stardist_labels.tif"
+        if not Path(label_path).exists():
+            print(f"[analysis] skipped: missing label file: {label_path}")
+        else:
+            try:
+                # lazy import so pipeline works even if post_analysis is absent
+                try:
+                    from src.post_analysis import run_analysis
+                except Exception:
+                    from .post_analysis import run_analysis  # if run as a package
+                print("[analysis] running post-count analysis…")
+                run_analysis(prefix, analysis_cfg)
+            except Exception as e:
+                print(f"[analysis] skipped due to error: {e}")
     else:
-        stack = read_tiff_to_ZCYX(inp)
+        print("[analysis] disabled (analysis.run is false or missing).")
 
-    Z,C,Y,X = stack.shape
-    dapi_c, alexa_c, cy3_c = chmap.get("DAPI",0), chmap.get("Alexa488",1), chmap.get("Cy3",2)
-
-    # Fiji if needed
-    ij = init_imagej(fiji_dir) if mode=="fiji_mip" else None
-
-    # per-channel processing
-    dapi  = process_channel(stack[:, dapi_c],  z_index=None if mode!="middle" else "middle", ij=ij) if dapi_c is not None and dapi_c<C else None
-    alexa = process_channel(stack[:, alexa_c], z_index=None if mode!="middle" else "middle", ij=ij) if alexa_c is not None and alexa_c<C else None
-    cy3   = process_channel(stack[:, cy3_c],   z_index=None if mode!="middle" else "middle", ij=ij) if cy3_c is not None and cy3_c<C else None
-
-    # previews
-    save_previews(dapi, alexa, cy3, prefix)
-
-    # StarDist
-    if sd_run:
-        mip_for_sd = [dapi, alexa, cy3][sd_idx]
-        if mip_for_sd is None:
-            raise ValueError(f"No image for StarDist channel index {sd_idx}")
-        labels = run_stardist_2d(mip_for_sd,
-                                 model_name=stc.get("model","2D_versatile_fluo"),
-                                 prob=stc.get("prob_thresh",0.579071),
-                                 nms=stc.get("nms_thresh",0.30),
-                                 pct=tuple(stc.get("normalize_percentiles",[2.0,98.5])))
-        lab_path = f"{prefix}_stardist_labels.tif"
-        tifsave(lab_path, labels, dtype=np.uint16)
-        df = measure_labels(labels)
-        csv_path = f"{prefix}_stardist_results.csv"
-        df.to_csv(csv_path, index=False)
-        print("Saved:", lab_path, csv_path)
-
-    print("Done.")
 
 if __name__ == "__main__":
     main()

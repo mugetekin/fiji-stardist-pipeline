@@ -1,6 +1,16 @@
 __pycache__/
 *.pyc
 *.ipynb_checkpoints/
-outputs/
+*.pyo
+*.code-workspace
+
 data/
+outputs/
+*.zip
+*.tif
+*.tiff
+*.jpg
+*.png
+
 .env
+.ipynb_checkpoints/
