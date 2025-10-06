@@ -1,8 +1,14 @@
----
-input_path: "data/AP231_1.tif"
-save_prefix: "outputs/AP231_1"
-mode: "fiji_mip"
+# Input TIFF exported from Fiji (multi-channel Z-stack)
+input_path: data/AP231_1.tif
 
+# All outputs (JPEG previews, labels, CSV) will be prefixed with this
+save_prefix: outputs/AP231_1
+
+# How to collapse Z: "mip" uses numpy max projection; "middle" uses the middle slice
+# (Use "mip" unless you specifically want the middle plane)
+mode: mip
+
+# Channel mapping inside the TIFF (0-based)
 channels:
   mapping:
     DAPI: 0
@@ -11,11 +17,23 @@ channels:
 
 stardist:
   run: true
-  channel: "DAPI"
-  model: "2D_versatile_fluo"
+  channel: DAPI               # run SD on DAPI
+  model: 2D_versatile_fluo
   prob_thresh: 0.579071
   nms_thresh: 0.30
   normalize_percentiles: [2.0, 98.5]
 
+analysis:
+  run: true
+  sox2_channel: "Cy3"          # or "Alexa488"
+  darkness_channel: "Cy3"
+  threshold_method: "low10p"   # or "median_plus_sd"
+  dark_percentile: 20
+  min_cells_for_regions: 5
+  make_overlay: true
+
+
+
+# If you ever want to re-enable Fiji MIP, set mode: fiji_mip and point to Fiji below
 fiji:
-  app_dir: "C:/Fiji.app"
+  app_dir: null               # e.g., "C:/Fiji.app" on Windows if you later use fiji_mip
