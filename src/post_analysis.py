@@ -170,6 +170,97 @@ def make_overlay_png(
     plt.close()
 
 # ---------------------------
+# CSV summary emitters
+# ---------------------------
+
+def _safe_pct(numer, denom):
+    return float(numer) / float(denom) * 100.0 if denom else 0.0
+
+def emit_summary_csvs(df: pd.DataFrame, save_prefix: str, sox2_col: str):
+    """
+    Write compact CSV summaries:
+      - {prefix}_counts_overall.csv       (single row)
+      - {prefix}_counts_by_region.csv     (one row per Region)
+    Assumes df has columns: ["Cell","X","Y","DAPI_mean","Alexa_mean","Cy3_mean",
+                             "Alexa_pos","Cy3_pos","Region", ...]
+    """
+    prefix = save_prefix
+
+    # Overall counts
+    total = int(len(df))
+    alexa_pos = int(df["Alexa_pos"].sum())
+    cy3_pos   = int(df["Cy3_pos"].sum())
+    coexp     = int((df["Alexa_pos"] & df["Cy3_pos"]).sum())
+    sox2_pos  = int(df[sox2_col].sum())
+
+    overall = {
+        "Prefix": prefix,
+        "Total_cells": total,
+
+        # Per-channel positivity (counts + %)
+        "Alexa_pos_count": alexa_pos,
+        "Alexa_pos_percent": _safe_pct(alexa_pos, total),
+        "Cy3_pos_count": cy3_pos,
+        "Cy3_pos_percent": _safe_pct(cy3_pos, total),
+
+        # Co-expression
+        "Coexpress_count": coexp,
+        "Coexpress_percent": _safe_pct(coexp, total),
+
+        # Sox2 (whichever channel is configured as Sox2)
+        "Sox2_channel": "Alexa488" if sox2_col == "Alexa_pos" else "Cy3",
+        "Sox2_pos_count": sox2_pos,
+        "Sox2_pos_percent": _safe_pct(sox2_pos, total),
+
+        # DAPI intensity snapshot (QC)
+        "DAPI_mean_median": float(df["DAPI_mean"].median()) if "DAPI_mean" in df.columns else float("nan"),
+        "DAPI_mean_mean": float(df["DAPI_mean"].mean()) if "DAPI_mean" in df.columns else float("nan"),
+
+        # Alexa/Cy3 central tendency (QC)
+        "Alexa_mean_median": float(df["Alexa_mean"].median()),
+        "Alexa_mean_mean": float(df["Alexa_mean"].mean()),
+        "Cy3_mean_median": float(df["Cy3_mean"].median()),
+        "Cy3_mean_mean": float(df["Cy3_mean"].mean()),
+    }
+
+    # By-region breakdown
+    by_region = (
+        df.assign(
+            Alexa_pos=df["Alexa_pos"].astype(bool),
+            Cy3_pos=df["Cy3_pos"].astype(bool),
+            Coexpress=(df["Alexa_pos"] & df["Cy3_pos"]).astype(bool),
+            Sox2_pos=df[sox2_col].astype(bool),
+        )
+        .groupby("Region", dropna=False)
+        .agg(
+            N=("Cell", "count"),
+            Alexa_pos_count=("Alexa_pos", "sum"),
+            Cy3_pos_count=("Cy3_pos", "sum"),
+            Coexpress_count=("Coexpress", "sum"),
+            Sox2_pos_count=("Sox2_pos", "sum"),
+            Alexa_mean_median=("Alexa_mean", "median"),
+            Cy3_mean_median=("Cy3_mean", "median"),
+            DAPI_mean_median=("DAPI_mean", "median") if "DAPI_mean" in df.columns else ("Alexa_mean", "median")
+        )
+        .reset_index()
+    )
+    # add percents per region
+    by_region["Alexa_pos_percent"]  = by_region.apply(lambda r: _safe_pct(r["Alexa_pos_count"], r["N"]), axis=1)
+    by_region["Cy3_pos_percent"]    = by_region.apply(lambda r: _safe_pct(r["Cy3_pos_count"], r["N"]), axis=1)
+    by_region["Coexpress_percent"]  = by_region.apply(lambda r: _safe_pct(r["Coexpress_count"], r["N"]), axis=1)
+    by_region["Sox2_pos_percent"]   = by_region.apply(lambda r: _safe_pct(r["Sox2_pos_count"], r["N"]), axis=1)
+
+    # Write CSVs
+    overall_df = pd.DataFrame([overall])
+    overall_csv = f"{prefix}_counts_overall.csv"
+    by_region_csv = f"{prefix}_counts_by_region.csv"
+
+    overall_df.to_csv(overall_csv, index=False)
+    by_region.to_csv(by_region_csv, index=False)
+
+    print(f"[analysis] wrote {overall_csv} and {by_region_csv}")
+
+# ---------------------------
 # Main one-sample analysis
 # ---------------------------
 
@@ -219,11 +310,14 @@ def analyze_one_prefix(
     geom = regionprops_table(labels, properties=("label","area","centroid"))
     geom_df = pd.DataFrame(geom).rename(columns={"label":"Cell", "centroid-0":"Y", "centroid-1":"X"})
 
-    # per-cell channel means
+    # per-cell channel means (DAPI included)
+    dapi_df  = region_means_by_label(labels, dapi,  "DAPI_mean")
     alexa_df = region_means_by_label(labels, alexa, "Alexa_mean")
     cy3_df   = region_means_by_label(labels, cy3,   "Cy3_mean")
 
-    df = geom_df.merge(alexa_df, on="Cell", how="left").merge(cy3_df, on="Cell", how="left")
+    df = (geom_df.merge(dapi_df,  on="Cell", how="left")
+                  .merge(alexa_df, on="Cell", how="left")
+                  .merge(cy3_df,   on="Cell", how="left"))
 
     # positivity thresholds
     if threshold_method == "low10p":
@@ -266,13 +360,14 @@ def analyze_one_prefix(
         "Coexpress_%": float((df["Alexa_pos"] & df["Cy3_pos"]).mean()*100.0),
     }
 
-    # write per-cell and per-sample outputs
+    # write per-cell table
     per_cell_csv = save_prefix + "_per_cell.csv"
     df.to_csv(per_cell_csv, index=False)
 
+    # region-level Sox2 summary
     summary_df = (
         df.assign(Sample=os.path.basename(save_prefix))
-          .groupby("Region")
+          .groupby("Region", dropna=False)
           .agg(Sox2_percent=(sox2_col, lambda s: float(s.mean()*100.0)),
                Sox2_count=(sox2_col, "sum"),
                N=("Cell", "count"))
@@ -299,6 +394,9 @@ def analyze_one_prefix(
             out_path=overlay_path,
             title=f"Overlay — {os.path.basename(save_prefix)}",
         )
+
+    # NEW: compact CSV summaries (overall + by-region, including counts for overlay colors)
+    emit_summary_csvs(df, save_prefix, sox2_col)
 
     summary.update({
         "Per_cell_csv": per_cell_csv,
