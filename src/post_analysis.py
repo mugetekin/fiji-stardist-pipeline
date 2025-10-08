@@ -69,6 +69,67 @@ def compute_threshold_median_plus_sd(series: pd.Series) -> Tuple[float,float,flo
     return float(th), med, sd
 
 # ---------------------------
+# Morphometry & intensity stats
+# ---------------------------
+
+def region_geometry_features(labels: np.ndarray) -> pd.DataFrame:
+    """
+    Basic morphometry per label: area, perimeter, major/minor axis, eccentricity, solidity, etc.
+    Also derives circularity and aspect ratio.
+    """
+    props = regionprops_table(
+        labels.astype(int),
+        properties=(
+            "label", "area", "perimeter",
+            "major_axis_length", "minor_axis_length",
+            "eccentricity", "solidity", "extent"
+        ),
+    )
+    g = pd.DataFrame(props).rename(columns={"label": "Cell"})
+
+    # Derived metrics
+    # circularity = 4*pi*area / perimeter^2  (robustness: avoid div by zero)
+    g["circularity"] = (4.0 * np.pi * g["area"]) / np.maximum(g["perimeter"]**2, 1e-8)
+    # aspect_ratio = major / minor
+    g["aspect_ratio"] = g["major_axis_length"] / np.maximum(g["minor_axis_length"], 1e-8)
+
+    return g
+
+
+def region_intensity_stats(label_img: np.ndarray, intensity_img: np.ndarray, prefix: str) -> pd.DataFrame:
+    """
+    Per-cell intensity stats for a given channel. Columns prefixed by `prefix` (e.g., 'DAPI_', 'Alexa_', 'Cy3_').
+    Stats: mean, median, std, p10, p90, sum.
+    """
+    # mean via regionprops_table (fast)
+    base = regionprops_table(
+        label_img.astype(int),
+        intensity_image=intensity_img,
+        properties=("label", "mean_intensity"),
+    )
+    df = pd.DataFrame(base).rename(columns={"label": "Cell", "mean_intensity": f"{prefix}mean"})
+
+    # For other stats we iterate (ok for per-cell)
+    stats = []
+    labels_uni = np.unique(label_img[label_img > 0])
+    for lab in labels_uni:
+        mask = (label_img == lab)
+        vals = intensity_img[mask].ravel()
+        if vals.size == 0:
+            med = std = p10 = p90 = ssum = np.nan
+        else:
+            med = float(np.median(vals))
+            std = float(np.std(vals, ddof=1)) if vals.size > 1 else 0.0
+            p10 = float(np.percentile(vals, 10))
+            p90 = float(np.percentile(vals, 90))
+            ssum = float(vals.sum())
+        stats.append([int(lab), med, std, p10, p90, ssum])
+
+    s = pd.DataFrame(stats, columns=["Cell", f"{prefix}median", f"{prefix}std", f"{prefix}p10", f"{prefix}p90", f"{prefix}sum"])
+    out = df.merge(s, on="Cell", how="outer")
+    return out
+
+# ---------------------------
 # Region assignment (Anterior/Marginal)
 # ---------------------------
 
@@ -310,14 +371,21 @@ def analyze_one_prefix(
     geom = regionprops_table(labels, properties=("label","area","centroid"))
     geom_df = pd.DataFrame(geom).rename(columns={"label":"Cell", "centroid-0":"Y", "centroid-1":"X"})
 
-    # per-cell channel means (DAPI included)
-    dapi_df  = region_means_by_label(labels, dapi,  "DAPI_mean")
-    alexa_df = region_means_by_label(labels, alexa, "Alexa_mean")
-    cy3_df   = region_means_by_label(labels, cy3,   "Cy3_mean")
+    # per-cell morphology
+    geom_more = region_geometry_features(labels)  # area, perimeter, eccentricity, solidity, etc.
 
-    df = (geom_df.merge(dapi_df,  on="Cell", how="left")
-                  .merge(alexa_df, on="Cell", how="left")
-                  .merge(cy3_df,   on="Cell", how="left"))
+    # per-cell intensity stats for each channel
+    dapi_stats  = region_intensity_stats(labels, dapi,  "DAPI_")
+    alexa_stats = region_intensity_stats(labels, alexa, "Alexa_")
+    cy3_stats   = region_intensity_stats(labels, cy3,   "Cy3_")
+
+    df = (geom_df
+      .merge(geom_more,  on="Cell", how="left")
+      .merge(dapi_stats, on="Cell", how="left")
+      .merge(alexa_stats,on="Cell", how="left")
+      .merge(cy3_stats,  on="Cell", how="left"))
+
+
 
     # positivity thresholds
     if threshold_method == "low10p":
