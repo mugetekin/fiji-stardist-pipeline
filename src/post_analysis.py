@@ -130,6 +130,88 @@ def region_intensity_stats(label_img: np.ndarray, intensity_img: np.ndarray, pre
     return out
 
 # ---------------------------
+# Illumination / Crosstalk correction
+# ---------------------------
+
+from skimage.filters import gaussian
+from skimage.restoration import estimate_sigma
+
+def flatfield_correct(img: np.ndarray, sigma: float = 50.0) -> np.ndarray:
+    """
+    Correct uneven illumination by dividing by a blurred 'flatfield' image.
+    sigma: blur radius (adjust based on image size)
+    """
+    smooth = gaussian(img, sigma=sigma, preserve_range=True)
+    smooth[smooth == 0] = np.median(smooth)
+    corrected = img / smooth
+    corrected = np.clip(corrected / np.percentile(corrected, 99.5), 0, 1)
+    return corrected.astype(np.float32)
+
+def crosstalk_correct(
+    alexa_img: np.ndarray,
+    cy3_img: np.ndarray,
+    bleed_factor: float = 0.1,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Simple linear unmixing between Alexa (green) and Cy3 (red) channels.
+    bleed_factor: estimated fraction of green leaking into red or vice versa.
+    """
+    a_corr = alexa_img - bleed_factor * cy3_img
+    c_corr = cy3_img - bleed_factor * alexa_img
+    a_corr[a_corr < 0] = 0
+    c_corr[c_corr < 0] = 0
+    return a_corr, c_corr
+
+def preprocess_channels_for_analysis(dapi, alexa, cy3) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Apply illumination + crosstalk correction before per-cell quantification."""
+    dapi_corr  = flatfield_correct(dapi, sigma=40)
+    alexa_corr = flatfield_correct(alexa, sigma=40)
+    cy3_corr   = flatfield_correct(cy3, sigma=40)
+    alexa_corr, cy3_corr = crosstalk_correct(alexa_corr, cy3_corr, bleed_factor=0.07)
+    return dapi_corr, alexa_corr, cy3_corr
+
+
+# ---------------------------
+# QC filtering
+# ---------------------------
+
+def apply_qc_filters(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Remove cells that are likely segmentation artifacts.
+    Rules (adjust as needed):
+      - area too small or too large
+      - aspect_ratio extremely high (elongated artifacts)
+      - circularity too low (weird shapes)
+      - intensity values zero or NaN
+    Returns a cleaned copy of df.
+    """
+    qc = df.copy()
+
+    # drop if area is invalid
+    if "area" in qc.columns:
+        area_low, area_high = qc["area"].quantile([0.01, 0.99])  # keep middle 98%
+        qc = qc[(qc["area"] > area_low) & (qc["area"] < area_high)]
+
+    # aspect ratio sanity
+    if "aspect_ratio" in qc.columns:
+        qc = qc[qc["aspect_ratio"] < 5.0]
+
+    # circularity sanity
+    if "circularity" in qc.columns:
+        qc = qc[qc["circularity"] > 0.2]
+
+    # remove NaNs and zeros in intensity means
+    for col in [c for c in qc.columns if c.endswith("_mean")]:
+        qc = qc[np.isfinite(qc[col])]
+        qc = qc[qc[col] > 0]
+
+    # reset index
+    qc = qc.reset_index(drop=True)
+    print(f"[QC] filtered: kept {len(qc)} / {len(df)} cells ({len(qc)/len(df)*100:.1f}%)")
+    return qc
+
+
+# ---------------------------
 # Region assignment (Anterior/Marginal)
 # ---------------------------
 
@@ -363,6 +445,10 @@ def analyze_one_prefix(
     alexa  = read_gray_float(alexa_path)
     cy3    = read_gray_float(cy3_path)
 
+    # --- Illumination & Crosstalk correction
+    dapi, alexa, cy3 = preprocess_channels_for_analysis(dapi, alexa, cy3)
+
+
     H,W = labels.shape
     assert dapi.shape == (H,W) and alexa.shape == (H,W) and cy3.shape == (H,W), \
         f"Shape mismatch: labels{labels.shape}, dapi{dapi.shape}, alexa{alexa.shape}, cy3{cy3.shape}"
@@ -406,6 +492,9 @@ def analyze_one_prefix(
     # which column is used for darkness/background?
     dark_img  = cy3 if darkness_channel.lower().startswith("cy3") else alexa
     dark_col  = "Cy3_mean" if darkness_channel.lower().startswith("cy3") else "Alexa_mean"
+    
+    # --- QC filtering to drop problematic cells
+    df = apply_qc_filters(df)
 
     # region assignment
     df = assign_regions_with_darkness(
