@@ -1,3 +1,4 @@
+# src/nuclei_pipeline.py
 import argparse
 import os
 from pathlib import Path
@@ -83,10 +84,11 @@ def _to_uint8(img01: np.ndarray) -> np.ndarray:
     return img_as_ubyte(np.clip(img01, 0, 1))
 
 
-def show_channels_colorized(dapi, alexa, cy3, save_prefix="TEST"):
+def show_channels_colorized(dapi, alexa, cy3, save_prefix="TEST", show: bool = False):
     """
     Show & save each channel in its own color (Blue/Green/Red) and also RGB merge.
     dapi/alexa/cy3: [0,1] normalized 2D numpy arrays (or None)
+    show: if True, opens a blocking matplotlib window; else just saves files.
     """
     imgs, titles = [], []
     saved_paths = []
@@ -146,7 +148,10 @@ def show_channels_colorized(dapi, alexa, cy3, save_prefix="TEST"):
         ax.set_title(ttl)
         ax.axis("off")
     plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
 
     print("Saved files:")
     for p in saved_paths:
@@ -156,7 +161,6 @@ def show_channels_colorized(dapi, alexa, cy3, save_prefix="TEST"):
 def _strip_leading_slashes(p: str) -> str:
     # Avoid absolute path from accidental leading '/' or '\'
     if p.startswith("\\") or p.startswith("/"):
-
         return p.lstrip("\\/")  # make relative
     return p
 
@@ -197,11 +201,12 @@ def resolve_input_path(user_path: str | os.PathLike) -> Path:
 
 
 # -------- main processing --------
-def show_channels_from_tiff(path, z_index="middle", rolling_radius=50, save_prefix="TEST"):
+def show_channels_from_tiff(path, z_index="middle", rolling_radius=50, save_prefix="TEST", show_plots: bool = False):
     """
     Open multi-channel TIFF from Fiji; take DAPI/Alexa/Cy3 slice (or z_index/MIP),
     background-subtract (rolling ball), colorize + merge, and save.
     Returns: (dapi, alexa, cy3) as [0,1] float32 arrays (or None if channel missing).
+    show_plots: forward to show_channels_colorized(show=...), default False to avoid blocking.
     """
     resolved_path = resolve_input_path(path)
     print("Resolved TIFF path:", resolved_path)
@@ -230,7 +235,7 @@ def show_channels_from_tiff(path, z_index="middle", rolling_radius=50, save_pref
     # Ensure output dir exists for the prefix
     _ensure_parent_dir(Path(save_prefix))
 
-    show_channels_colorized(dapi, alexa, cy3, save_prefix=save_prefix)
+    show_channels_colorized(dapi, alexa, cy3, save_prefix=save_prefix, show=show_plots)
     return dapi, alexa, cy3
 
 
@@ -243,6 +248,7 @@ def parse_args():
     ap.add_argument("--mode", type=str, default=None,
                     help="z selection: 'middle' (default), 'mip'/'none' for MIP, or 'z=<int>'")
     ap.add_argument("--rolling_radius", type=int, default=None, help="Rolling-ball radius")
+    ap.add_argument("--show", action="store_true", help="Show matplotlib figure (blocks). Off by default.")
     return ap.parse_args()
 
 
@@ -292,6 +298,7 @@ def main():
         z_index=z_index,
         rolling_radius=rolling_radius,
         save_prefix=save_prefix,
+        show_plots=args.show,   # <-- non-blocking by default
     )
     print("Preview images saved with prefix:", Path(save_prefix).resolve())
 
