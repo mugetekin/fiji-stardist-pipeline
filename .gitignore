@@ -1,34 +1,28 @@
-# ---- Default: ignore data and output folders ----
+# Ignore everything in data and outputs by default
 data/**
 outputs/**
 
-# ---- Unignore directories (directories first) ----
+# Re-allow the directories themselves
 !data/
 !data/**/
 !outputs/
 !outputs/**/
 
-# ---- data: include only small, textual examples ----
+# Allow selected file types
 !data/**/*.csv
-!data/**/*.tsv
 !data/**/*.txt
-!data/**/*.json
-
-# ---- outputs: include reports and summaries ----
 !outputs/**/*.csv
 !outputs/**/*.html
-
-# ---- outputs: include thumbnails (figure/overlay etc.) ----
 !outputs/**/*.png
 !outputs/**/*.jpg
 !outputs/**/*.jpeg
-!outputs/**/*_stardist_labels.tif
 
-# ---- ignore notebook checkpoints ----
+# Optionally allow label TIFs (if needed, use Git LFS)
+# !outputs/**/*_stardist_labels.tif
+
+# Ignore notebook checkpoints and cache
 .ipynb_checkpoints/
-# Python cache
 __pycache__/
 *.pyc
-# OS
 .DS_Store
 Thumbs.db
