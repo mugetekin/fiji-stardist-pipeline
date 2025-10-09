@@ -210,24 +210,6 @@ def apply_qc_filters(df: pd.DataFrame) -> pd.DataFrame:
     print(f"[QC] filtered: kept {len(qc)} / {len(df)} cells ({len(qc)/len(df)*100:.1f}%)")
     return qc
 
-# --- Plugins (optional)
-from src.plugins.runner import run_plugins, AnalysisContext
-
-ctx = AnalysisContext({
-    "prefix": save_prefix,
-    # örnek organel varsayılanları (istediğin gibi değiştir)
-    "organelle": {
-        "channel": "Cy3",
-        "min_sigma": 1.5, "max_sigma": 3.5, "num_sigma": 5,
-        "threshold": 0.02, "overlap": 0.5, "disc_radius": 2
-    }
-})
-# plugins listesi config'ten de gelebilir:
-plugin_names = (cfg.get("plugins") if isinstance(cfg, dict) else None) or ["organelle_puncta"]
-
-images_dict = {"DAPI": dapi, "Alexa": alexa, "Cy3": cy3}
-df, plugin_outputs = run_plugins(plugin_names, df, images_dict, labels, ctx)
-
 
 # ---------------------------
 # Region assignment (Anterior/Marginal)
@@ -514,6 +496,22 @@ def analyze_one_prefix(
     # --- QC filtering to drop problematic cells
     df = apply_qc_filters(df)
 
+    # --- Plugins (optional)
+    from src.plugins.runner import run_plugins, AnalysisContext
+
+    ctx = AnalysisContext({
+        "prefix": save_prefix,
+        "organelle": {
+        "channel": "Cy3",
+        "min_sigma": 1.5, "max_sigma": 3.5, "num_sigma": 5,
+        "threshold": 0.02, "overlap": 0.5, "disc_radius": 2
+        }
+    })
+    
+    plugin_names = (cfg.get("plugins") if isinstance(cfg, dict) else None) or ["organelle_puncta"]
+    images_dict = {"DAPI": dapi, "Alexa": alexa, "Cy3": cy3}
+    df, plugin_outputs = run_plugins(plugin_names, df, images_dict, labels, ctx)
+    
     # region assignment
     df = assign_regions_with_darkness(
         df, darkness_image=dark_img, intensity_col_for_darkness=dark_col,
