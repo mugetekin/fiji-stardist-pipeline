@@ -69,6 +69,149 @@ def compute_threshold_median_plus_sd(series: pd.Series) -> Tuple[float,float,flo
     return float(th), med, sd
 
 # ---------------------------
+# Morphometry & intensity stats
+# ---------------------------
+
+def region_geometry_features(labels: np.ndarray) -> pd.DataFrame:
+    """
+    Basic morphometry per label: area, perimeter, major/minor axis, eccentricity, solidity, etc.
+    Also derives circularity and aspect ratio.
+    """
+    props = regionprops_table(
+        labels.astype(int),
+        properties=(
+            "label", "area", "perimeter",
+            "major_axis_length", "minor_axis_length",
+            "eccentricity", "solidity", "extent"
+        ),
+    )
+    g = pd.DataFrame(props).rename(columns={"label": "Cell"})
+
+    # Derived metrics
+    # circularity = 4*pi*area / perimeter^2  (robustness: avoid div by zero)
+    g["circularity"] = (4.0 * np.pi * g["area"]) / np.maximum(g["perimeter"]**2, 1e-8)
+    # aspect_ratio = major / minor
+    g["aspect_ratio"] = g["major_axis_length"] / np.maximum(g["minor_axis_length"], 1e-8)
+
+    return g
+
+
+def region_intensity_stats(label_img: np.ndarray, intensity_img: np.ndarray, prefix: str) -> pd.DataFrame:
+    """
+    Per-cell intensity stats for a given channel. Columns prefixed by `prefix` (e.g., 'DAPI_', 'Alexa_', 'Cy3_').
+    Stats: mean, median, std, p10, p90, sum.
+    """
+    # mean via regionprops_table (fast)
+    base = regionprops_table(
+        label_img.astype(int),
+        intensity_image=intensity_img,
+        properties=("label", "mean_intensity"),
+    )
+    df = pd.DataFrame(base).rename(columns={"label": "Cell", "mean_intensity": f"{prefix}mean"})
+
+    # For other stats we iterate (ok for per-cell)
+    stats = []
+    labels_uni = np.unique(label_img[label_img > 0])
+    for lab in labels_uni:
+        mask = (label_img == lab)
+        vals = intensity_img[mask].ravel()
+        if vals.size == 0:
+            med = std = p10 = p90 = ssum = np.nan
+        else:
+            med = float(np.median(vals))
+            std = float(np.std(vals, ddof=1)) if vals.size > 1 else 0.0
+            p10 = float(np.percentile(vals, 10))
+            p90 = float(np.percentile(vals, 90))
+            ssum = float(vals.sum())
+        stats.append([int(lab), med, std, p10, p90, ssum])
+
+    s = pd.DataFrame(stats, columns=["Cell", f"{prefix}median", f"{prefix}std", f"{prefix}p10", f"{prefix}p90", f"{prefix}sum"])
+    out = df.merge(s, on="Cell", how="outer")
+    return out
+
+# ---------------------------
+# Illumination / Crosstalk correction
+# ---------------------------
+
+from skimage.filters import gaussian
+from skimage.restoration import estimate_sigma
+
+def flatfield_correct(img: np.ndarray, sigma: float = 50.0) -> np.ndarray:
+    """
+    Correct uneven illumination by dividing by a blurred 'flatfield' image.
+    sigma: blur radius (adjust based on image size)
+    """
+    smooth = gaussian(img, sigma=sigma, preserve_range=True)
+    smooth[smooth == 0] = np.median(smooth)
+    corrected = img / smooth
+    corrected = np.clip(corrected / np.percentile(corrected, 99.5), 0, 1)
+    return corrected.astype(np.float32)
+
+def crosstalk_correct(
+    alexa_img: np.ndarray,
+    cy3_img: np.ndarray,
+    bleed_factor: float = 0.1,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Simple linear unmixing between Alexa (green) and Cy3 (red) channels.
+    bleed_factor: estimated fraction of green leaking into red or vice versa.
+    """
+    a_corr = alexa_img - bleed_factor * cy3_img
+    c_corr = cy3_img - bleed_factor * alexa_img
+    a_corr[a_corr < 0] = 0
+    c_corr[c_corr < 0] = 0
+    return a_corr, c_corr
+
+def preprocess_channels_for_analysis(dapi, alexa, cy3) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Apply illumination + crosstalk correction before per-cell quantification."""
+    dapi_corr  = flatfield_correct(dapi, sigma=40)
+    alexa_corr = flatfield_correct(alexa, sigma=40)
+    cy3_corr   = flatfield_correct(cy3, sigma=40)
+    alexa_corr, cy3_corr = crosstalk_correct(alexa_corr, cy3_corr, bleed_factor=0.07)
+    return dapi_corr, alexa_corr, cy3_corr
+
+
+# ---------------------------
+# QC filtering
+# ---------------------------
+
+def apply_qc_filters(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Remove cells that are likely segmentation artifacts.
+    Rules (adjust as needed):
+      - area too small or too large
+      - aspect_ratio extremely high (elongated artifacts)
+      - circularity too low (weird shapes)
+      - intensity values zero or NaN
+    Returns a cleaned copy of df.
+    """
+    qc = df.copy()
+
+    # drop if area is invalid
+    if "area" in qc.columns:
+        area_low, area_high = qc["area"].quantile([0.01, 0.99])  # keep middle 98%
+        qc = qc[(qc["area"] > area_low) & (qc["area"] < area_high)]
+
+    # aspect ratio sanity
+    if "aspect_ratio" in qc.columns:
+        qc = qc[qc["aspect_ratio"] < 5.0]
+
+    # circularity sanity
+    if "circularity" in qc.columns:
+        qc = qc[qc["circularity"] > 0.2]
+
+    # remove NaNs and zeros in intensity means
+    for col in [c for c in qc.columns if c.endswith("_mean")]:
+        qc = qc[np.isfinite(qc[col])]
+        qc = qc[qc[col] > 0]
+
+    # reset index
+    qc = qc.reset_index(drop=True)
+    print(f"[QC] filtered: kept {len(qc)} / {len(df)} cells ({len(qc)/len(df)*100:.1f}%)")
+    return qc
+
+
+# ---------------------------
 # Region assignment (Anterior/Marginal)
 # ---------------------------
 
@@ -302,6 +445,10 @@ def analyze_one_prefix(
     alexa  = read_gray_float(alexa_path)
     cy3    = read_gray_float(cy3_path)
 
+    # --- Illumination & Crosstalk correction
+    dapi, alexa, cy3 = preprocess_channels_for_analysis(dapi, alexa, cy3)
+
+
     H,W = labels.shape
     assert dapi.shape == (H,W) and alexa.shape == (H,W) and cy3.shape == (H,W), \
         f"Shape mismatch: labels{labels.shape}, dapi{dapi.shape}, alexa{alexa.shape}, cy3{cy3.shape}"
@@ -310,14 +457,21 @@ def analyze_one_prefix(
     geom = regionprops_table(labels, properties=("label","area","centroid"))
     geom_df = pd.DataFrame(geom).rename(columns={"label":"Cell", "centroid-0":"Y", "centroid-1":"X"})
 
-    # per-cell channel means (DAPI included)
-    dapi_df  = region_means_by_label(labels, dapi,  "DAPI_mean")
-    alexa_df = region_means_by_label(labels, alexa, "Alexa_mean")
-    cy3_df   = region_means_by_label(labels, cy3,   "Cy3_mean")
+    # per-cell morphology
+    geom_more = region_geometry_features(labels)  # area, perimeter, eccentricity, solidity, etc.
 
-    df = (geom_df.merge(dapi_df,  on="Cell", how="left")
-                  .merge(alexa_df, on="Cell", how="left")
-                  .merge(cy3_df,   on="Cell", how="left"))
+    # per-cell intensity stats for each channel
+    dapi_stats  = region_intensity_stats(labels, dapi,  "DAPI_")
+    alexa_stats = region_intensity_stats(labels, alexa, "Alexa_")
+    cy3_stats   = region_intensity_stats(labels, cy3,   "Cy3_")
+
+    df = (geom_df
+      .merge(geom_more,  on="Cell", how="left")
+      .merge(dapi_stats, on="Cell", how="left")
+      .merge(alexa_stats,on="Cell", how="left")
+      .merge(cy3_stats,  on="Cell", how="left"))
+
+
 
     # positivity thresholds
     if threshold_method == "low10p":
@@ -338,7 +492,26 @@ def analyze_one_prefix(
     # which column is used for darkness/background?
     dark_img  = cy3 if darkness_channel.lower().startswith("cy3") else alexa
     dark_col  = "Cy3_mean" if darkness_channel.lower().startswith("cy3") else "Alexa_mean"
+    
+    # --- QC filtering to drop problematic cells
+    df = apply_qc_filters(df)
 
+    # --- Plugins (optional)
+    from src.plugins.runner import run_plugins, AnalysisContext
+
+    ctx = AnalysisContext({
+        "prefix": save_prefix,
+        "organelle": {
+        "channel": "Cy3",
+        "min_sigma": 1.5, "max_sigma": 3.5, "num_sigma": 5,
+        "threshold": 0.02, "overlap": 0.5, "disc_radius": 2
+        }
+    })
+    
+    plugin_names = (cfg.get("plugins") if isinstance(cfg, dict) else None) or ["organelle_puncta"]
+    images_dict = {"DAPI": dapi, "Alexa": alexa, "Cy3": cy3}
+    df, plugin_outputs = run_plugins(plugin_names, df, images_dict, labels, ctx)
+    
     # region assignment
     df = assign_regions_with_darkness(
         df, darkness_image=dark_img, intensity_col_for_darkness=dark_col,
