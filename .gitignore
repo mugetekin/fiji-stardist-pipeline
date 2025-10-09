@@ -10,15 +10,19 @@ outputs/**
 
 # Allow selected file types
 !data/**/*.csv
+!data/**/*.tsv
 !data/**/*.txt
+!data/**/*.json
 !outputs/**/*.csv
 !outputs/**/*.html
 !outputs/**/*.png
 !outputs/**/*.jpg
 !outputs/**/*.jpeg
+!outputs/**/*.tif
+!outputs/**/*.tiff
 
 # Optionally allow label TIFs (if needed, use Git LFS)
-# !outputs/**/*_stardist_labels.tif
+!outputs/**/*_stardist_labels.tif
 
 # Ignore notebook checkpoints and cache
 .ipynb_checkpoints/
