@@ -1,16 +1,18 @@
+# --- runtime artifacts (kept out of Git) ---
+data/*
+!data/.gitkeep
+
+outputs/*
+!outputs/.gitkeep
+
+# Optional: if you insist on showing the folder but not contents
+.ipynb_checkpoints/*
+!.ipynb_checkpoints/.gitkeep
+
+# Python cache and common junk
 __pycache__/
 *.pyc
-*.ipynb_checkpoints/
-*.pyo
-*.code-workspace
 
-data/
-outputs/
-*.zip
-*.tif
-*.tiff
-*.jpg
-*.png
-
-.env
-.ipynb_checkpoints/
+# OS cruft
+.DS_Store
+Thumbs.db
