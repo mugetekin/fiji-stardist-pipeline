@@ -416,6 +416,7 @@ def analyze_one_prefix(
     dark_percentile: float = 20.0,
     min_cells_for_regions: int = 5,
     make_overlay: bool = True,
+    cfg: Optional[Dict] = None,          # <-- NEW: analysis/config dict
 ) -> Tuple[pd.DataFrame, Dict[str, float]]:
     """
     Run per-cell analysis for a single sample given a `save_prefix`.
@@ -448,7 +449,6 @@ def analyze_one_prefix(
     # --- Illumination & Crosstalk correction
     dapi, alexa, cy3 = preprocess_channels_for_analysis(dapi, alexa, cy3)
 
-
     H,W = labels.shape
     assert dapi.shape == (H,W) and alexa.shape == (H,W) and cy3.shape == (H,W), \
         f"Shape mismatch: labels{labels.shape}, dapi{dapi.shape}, alexa{alexa.shape}, cy3{cy3.shape}"
@@ -470,8 +470,6 @@ def analyze_one_prefix(
       .merge(dapi_stats, on="Cell", how="left")
       .merge(alexa_stats,on="Cell", how="left")
       .merge(cy3_stats,  on="Cell", how="left"))
-
-
 
     # positivity thresholds
     if threshold_method == "low10p":
@@ -496,22 +494,27 @@ def analyze_one_prefix(
     # --- QC filtering to drop problematic cells
     df = apply_qc_filters(df)
 
-    # --- Plugins (optional)
-    from src.plugins.runner import run_plugins, AnalysisContext
+    # --- Plugin system (organelle analysis, time-series tracking, etc.) ---
+    # Read analysis settings from config (if provided)
+    cfg = cfg or {}
+    analysis_cfg = cfg.get("analysis", {}) if isinstance(cfg, dict) else {}
+    plugin_names = analysis_cfg.get("plugins", ["organelle_puncta"])
 
-    ctx = AnalysisContext({
-        "prefix": save_prefix,
-        "organelle": {
-        "channel": "Cy3",
-        "min_sigma": 1.5, "max_sigma": 3.5, "num_sigma": 5,
-        "threshold": 0.02, "overlap": 0.5, "disc_radius": 2
-        }
-    })
-    
-    plugin_names = (cfg.get("plugins") if isinstance(cfg, dict) else None) or ["organelle_puncta"]
     images_dict = {"DAPI": dapi, "Alexa": alexa, "Cy3": cy3}
-    df, plugin_outputs = run_plugins(plugin_names, df, images_dict, labels, ctx)
-    
+
+    # Build analysis context passed to plugins
+    try:
+        from src.plugins.runner import run_plugins, AnalysisContext
+        ctx = AnalysisContext({
+            "prefix": save_prefix,
+            "analysis_cfg": analysis_cfg,  # plugins read their own namespaces (e.g., 'organelle', 'tracking')
+        })
+        print(f"[plugins] running: {plugin_names}")
+        df, plugin_outputs = run_plugins(plugin_names, df, images_dict, labels, ctx)
+    except Exception as e:
+        # If plugins are unavailable, continue gracefully
+        print(f"[plugins] skipped ({e})")
+
     # region assignment
     df = assign_regions_with_darkness(
         df, darkness_image=dark_img, intensity_col_for_darkness=dark_col,
@@ -596,6 +599,7 @@ def run_analysis(save_prefix: str, cfg: Optional[Dict] = None) -> Dict[str, floa
         dark_percentile    = float(cfg.get("dark_percentile", 20.0)),
         min_cells_for_regions = int(cfg.get("min_cells_for_regions", 5)),
         make_overlay       = bool(cfg.get("make_overlay", True)),
+        cfg                = cfg,  # <-- thread full config for plugins
     )
     print("[analysis] summary:", summary)
     return summary
@@ -620,5 +624,6 @@ if __name__ == "__main__":
         dark_percentile=args.dark,
         min_cells_for_regions=args.min_cells,
         make_overlay=(not args.no_overlay),
+        cfg={},  # CLI path runs without external YAML unless wired by caller
     )
     print(json.dumps(sm, indent=2))
