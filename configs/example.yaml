@@ -27,6 +27,7 @@ analysis:
   run: true
   plugins:
     - organelle_puncta
+    - timeseries_tracking
   organelle:
     channel: "Cy3"
     min_sigma: 1.5
@@ -35,6 +36,10 @@ analysis:
     threshold: 0.02
     overlap: 0.5
     disc_radius: 2
+  tracking:
+    labels_dir: "data/timeseries/"
+    sample: "AP231_1"
+    max_dist: 25.0
   sox2_channel: "Cy3"          # or "Alexa488"
   darkness_channel: "Cy3"
   threshold_method: "low10p"   # or "median_plus_sd"

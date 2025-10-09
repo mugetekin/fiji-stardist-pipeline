@@ -1,16 +1,32 @@
+# Ignore everything in data and outputs by default
+data/**
+outputs/**
+
+# Re-allow the directories themselves
+!data/
+!data/**/
+!outputs/
+!outputs/**/
+
+# Allow selected file types
+!data/**/*.csv
+!data/**/*.tsv
+!data/**/*.txt
+!data/**/*.json
+!outputs/**/*.csv
+!outputs/**/*.html
+!outputs/**/*.png
+!outputs/**/*.jpg
+!outputs/**/*.jpeg
+!outputs/**/*.tif
+!outputs/**/*.tiff
+
+# Optionally allow label TIFs (if needed, use Git LFS)
+!outputs/**/*_stardist_labels.tif
+
+# Ignore notebook checkpoints and cache
+.ipynb_checkpoints/
 __pycache__/
 *.pyc
-*.ipynb_checkpoints/
-*.pyo
-*.code-workspace
-
-data/
-outputs/
-*.zip
-*.tif
-*.tiff
-*.jpg
-*.png
-
-.env
-.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
