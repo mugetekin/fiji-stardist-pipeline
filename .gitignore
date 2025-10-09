@@ -1,18 +1,34 @@
-# --- runtime artifacts (kept out of Git) ---
-data/*
-!data/.gitkeep
+# ---- Default: ignore data and output folders ----
+data/**
+outputs/**
 
-outputs/*
-!outputs/.gitkeep
+# ---- Unignore directories (directories first) ----
+!data/
+!data/**/
+!outputs/
+!outputs/**/
 
-# Optional: if you insist on showing the folder but not contents
-.ipynb_checkpoints/*
-!.ipynb_checkpoints/.gitkeep
+# ---- data: include only small, textual examples ----
+!data/**/*.csv
+!data/**/*.tsv
+!data/**/*.txt
+!data/**/*.json
 
-# Python cache and common junk
+# ---- outputs: include reports and summaries ----
+!outputs/**/*.csv
+!outputs/**/*.html
+
+# ---- outputs: include thumbnails (figure/overlay etc.) ----
+!outputs/**/*.png
+!outputs/**/*.jpg
+!outputs/**/*.jpeg
+!outputs/**/*_stardist_labels.tif
+
+# ---- ignore notebook checkpoints ----
+.ipynb_checkpoints/
+# Python cache
 __pycache__/
 *.pyc
-
-# OS cruft
+# OS
 .DS_Store
 Thumbs.db
