@@ -249,6 +249,9 @@ def parse_args():
                     help="z selection: 'middle' (default), 'mip'/'none' for MIP, or 'z=<int>'")
     ap.add_argument("--rolling_radius", type=int, default=None, help="Rolling-ball radius")
     ap.add_argument("--show", action="store_true", help="Show matplotlib figure (blocks). Off by default.")
+    ap.add_argument("--plugins", nargs="*", help="Optional list of plugin module names to activate.")
+    ap.add_argument("--review", action="store_true",
+                help="Open Napari-based review UI after processing (if installed).")
     return ap.parse_args()
 
 
@@ -306,6 +309,13 @@ def main():
     # Optional post-count analysis
     # ----------------------------
     analysis_cfg = cfg.get("analysis", {}) if isinstance(cfg, dict) else {}
+    
+    # Merge CLI-provided plugin list into config (overrides YAML)
+    if args.plugins is not None:
+        analysis_cfg.setdefault("plugins", [])
+        # If user wrote --plugins with no names, that disables all plugins
+        analysis_cfg["plugins"] = args.plugins
+
 
     # Prefix variable used by post_analysis
     prefix = save_prefix
