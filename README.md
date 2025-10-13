@@ -93,7 +93,7 @@ Each processed sample creates an `outputs/<sample>` folder with:
 
 ---
 
-## 💡 Tips
+## Tips
 - Keep large TIFFs out of Git with `.gitignore` and Git LFS.
 - Extend analysis by writing your own plugin (see `src/plugins/`).
 - Use batch mode via `src/run_multi.py` for multiple samples.
