@@ -1,6 +1,6 @@
 # Fiji–StarDist Pipeline
 
-A modular **Python pipeline** for quantitative fluorescence microscopy image analysis — built around **StarDist** segmentation and extendable with plugins for organelle analysis, tracking, and custom metrics.
+A modular **Python pipeline** for quantitative fluorescence microscopy image analysis, built around **StarDist** segmentation and extendable with plugins for organelle analysis, tracking, and custom metrics.
 
 ---
 
