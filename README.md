@@ -1,128 +1,99 @@
-# Fiji–StarDist Analysis Pipeline
+# Fiji–StarDist Pipeline
 
-This repository provides a modular, Python-based pipeline for quantitative image analysis of pituitary tissue and related fluorescence microscopy data.  
-It integrates **StarDist** segmentation with structured post-analysis, organelle quantification, and optional interactive review.
-
----
-
-## Overview
-
-The pipeline performs:
-1. **Segmentation** – nuclei detection using StarDist (3D or MIP mode)
-2. **Channel preprocessing** – illumination and crosstalk correction
-3. **Per-cell feature extraction** – morphometrics, intensities, and QC filtering
-4. **Region assignment** – anterior vs. marginal using Sox2 and intensity thresholds
-5. **Plugin-based extensions** – organelle analysis, time-series tracking, and more
-6. **Summary export** – compact CSVs and overlay figures for each sample
+A modular **Python pipeline** for quantitative fluorescence microscopy image analysis — built around **StarDist** segmentation and extendable with plugins for organelle analysis, tracking, and custom metrics.
 
 ---
 
-## Key Features
+## What It Does
+1. **Segment nuclei** using StarDist (2D or 3D)
+2. **Preprocess channels** (illumination + crosstalk correction)
+3. **Measure features** per cell (intensity, area, shape)
+4. **Assign regions** (e.g., anterior vs. marginal)
+5. **Run plugins** for extra analyses (puncta detection, tracking, etc.)
+6. **Export results** as clean CSVs, overlay images, and optional HTML reports
 
-- **Modular plugin system**  
-  Plugins are discovered automatically from the YAML configuration or can be specified via CLI:
-  ```bash
-  python -m src.nuclei_pipeline --config configs/example.yaml --plugins organelle_puncta timeseries_tracking
+---
 
 ## Installation
 
-**Prerequisites**
-- Python 3.9–3.12 (tested on 3.10/3.11)
+**Requirements**
+- Python ≥ 3.9 (tested on 3.10–3.12)
 - Git
-- (Optional) CUDA/cuDNN if you plan to train/run DL models yourself
-- (Optional) Git LFS if you intend to version large TIFFs
+- (optional) CUDA for deep learning
+- (optional) Git LFS for large images
 
-**1) Clone**
 ```bash
+# Clone the repo
 git clone https://github.com/mugetekin/fiji-stardist-pipeline.git
 cd fiji-stardist-pipeline
-```
 
-**2) Create an isolated environment**
-
-Using Conda (recommended):
-```bash
+# Create a fresh environment (Conda example)
 conda create -n fiji-stardist python=3.11 -y
 conda activate fiji-stardist
-```
 
-Or using venv:
-```bash
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS/Linux:
-source .venv/bin/activate
-```
-3) Install dependencies
-
-If a requirements.txt exists:
-```bash
+# Install dependencies
 pip install -U pip
-pip install -r requirements.txt
+pip install -r requirements.txt  # or manually if not provided
 ```
 
-Otherwise, install the minimal stack:
+Minimal manual install:
 ```bash
-pip install -U pip
 pip install numpy pandas scikit-image tifffile matplotlib pyyaml
-# Optional (plugin/UI):
-pip install napari[all]  # for --review
-# If you will use Git LFS for large files:
+# Optional extras
+pip install napari[all]  # for --review mode
 git lfs install
 ```
 
-## Run the pipeline
+---
+
+##  Run the Pipeline
+
+Process a dataset:
 ```bash
 python -m src.nuclei_pipeline --config configs/example.yaml
 ```
 
-Override plugins at runtime:
+Run specific plugins:
 ```bash
-# Use exactly these two plugins
-python -m src.nuclei_pipeline --config configs/example.yaml --plugins organelle_puncta timeseries_tracking
+python -m src.nuclei_pipeline --config configs/example.yaml   --plugins organelle_puncta timeseries_tracking
+```
 
-# Disable all plugins for this run
+Skip all plugins:
+```bash
 python -m src.nuclei_pipeline --config configs/example.yaml --plugins
 ```
 
-Open the interactive Napari review after processing:
+Open an interactive Napari review:
 ```bash
 python -m src.nuclei_pipeline --config configs/example.yaml --review
 ```
 
-## The system supports:
-
-organelle_puncta – quantifies subcellular puncta per cell
-
-timeseries_tracking – links labeled cells across timepoints
-
-### Optional Napari review interface
-
-Add --review to open an interactive QC window for manual correction:
-
-python -m src.nuclei_pipeline --config configs/example.yaml --review
-
-## Automatic illumination and crosstalk correction
-Flat-field correction (Gaussian blur) and linear unmixing between Alexa488 and Cy3 channels.
-
-## Quality control filtering
-Removes artifacts based on area, aspect ratio, circularity, and intensity validity.
-
-Outputs
-
-Each processed sample (e.g., outputs/AP231_1) produces:
 ---
-| File	|  Description |
 
-*_per_cell.csv |	Full per-cell morphometric and intensity table
+## Built-in Plugins
+| Plugin | Purpose |
+|--------|----------|
+| `organelle_puncta` | Detects puncta-like organelles using LoG blob detection |
+| `timeseries_tracking` | Tracks labeled cells over time using per-frame labels |
 
-*_summary.csv |	Region-level Sox2 summary
+Custom plugins can be added easily under `src/plugins/`.
 
-*_counts_overall.csv / *_counts_by_region.csv | Compact summary tables
+---
 
-*_overlay.png	| Color-coded overlay (Alexa+, Cy3+, co-expression)
+## Outputs
 
-report.html	(optional) | Combined visual summary report
+Each processed sample creates an `outputs/<sample>` folder with:
 
+| File | Description |
+|------|--------------|
+| `*_per_cell.csv` | Per-cell morphology and intensity data |
+| `*_summary.csv` | Region-level summary |
+| `*_counts_overall.csv`, `*_counts_by_region.csv` | Compact summaries |
+| `*_overlay.png` | Color-coded overlay (Alexa+, Cy3+, co-expressing) |
 
+---
+
+## 💡 Tips
+- Keep large TIFFs out of Git with `.gitignore` and Git LFS.
+- Extend analysis by writing your own plugin (see `src/plugins/`).
+- Use batch mode via `src/run_multi.py` for multiple samples.
