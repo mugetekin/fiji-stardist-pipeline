@@ -20,3 +20,9 @@ dependencies:
       - csbdeep==0.7.4
       - stardist==0.8.5
       - oiffile
+
+
+plugins:
+  - organelle_puncta
+  - timeseries_tracking
+
