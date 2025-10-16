@@ -1,0 +1,8 @@
+# --- sox2_batch.yaml ---
+input_path: C:\data\tiff\
+save_prefix: C:\projects\fiji-stardist-pipeline\outputs\sox2_batch
+mode: mip
+plugins:
+  - organelle_puncta
+  - timeseries_tracking
+  - stardist_segmentation

@@ -1,0 +1,21 @@
+input_path: "C:/data/tiff/sox2 cy3_growth_AS124_1.tif"
+save_prefix: "C:/projects/fiji-stardist-pipeline/outputs/growth/sox2 cy3_growth_AS124_1/sox2 cy3_growth_AS124_1"
+mode: mip
+rolling_radius: 30
+
+stardist:
+  run: true
+  channel: DAPI
+  model: 2D_versatile_fluo
+  prob_thresh: 0.58
+  nms_thresh: 0.30
+  normalize_percentiles: [2.0, 98.5]
+  
+channels:
+  mapping:
+    DAPI: 0
+    Alexa488: 1
+    Cy3: 2
+
+analysis:
+  run: true

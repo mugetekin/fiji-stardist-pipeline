@@ -28,6 +28,7 @@ analysis:
   plugins:
     - organelle_puncta
     - timeseries_tracking
+    - stardist_segmentation
   organelle:
     channel: "Cy3"
     min_sigma: 1.5

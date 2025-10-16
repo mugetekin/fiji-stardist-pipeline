@@ -1,0 +1,27 @@
+mode: mip
+rolling_radius: 30
+channels:
+  mapping:
+    DAPI: 0
+    Alexa488: 1
+    Cy3: 2
+stardist:
+  run: true
+  channel: DAPI
+  model: 2D_versatile_fluo
+  prob_thresh: 0.58
+  nms_thresh: 0.30
+  normalize_percentiles: [2.0, 98.5]
+analysis:
+  run: true
+  export:
+    summary_csv: true
+    counts_overall_csv: true
+    counts_by_region_csv: true
+    per_cell_table_csv: true
+plugins:
+  - stardist_segmentation
+  - organelle_puncta
+  - timeseries_tracking
+fiji:
+  app_dir: null

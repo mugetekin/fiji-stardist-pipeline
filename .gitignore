@@ -21,6 +21,15 @@ outputs/**
 !outputs/**/*.tif
 !outputs/**/*.tiff
 
+# virtual environments
+.venv/
+.venv310/
+
+# temporary configs and logs
+configs/_tmp_*.yaml
+logs/
+
+
 # Optionally allow label TIFs (if needed, use Git LFS)
 !outputs/**/*_stardist_labels.tif
 

@@ -1,2 +1,0 @@
-Prefix,Total_cells,Alexa_pos_count,Alexa_pos_percent,Cy3_pos_count,Cy3_pos_percent,Coexpress_count,Coexpress_percent,Sox2_channel,Sox2_pos_count,Sox2_pos_percent,DAPI_mean_median,DAPI_mean_mean,Alexa_mean_median,Alexa_mean_mean,Cy3_mean_median,Cy3_mean_mean
-outputs/AP231_1,609,518,85.0574712643678,518,85.0574712643678,443,72.74220032840722,Cy3,518,85.0574712643678,0.18309450149536133,0.20468576857131984,0.07852886617183685,0.0815861901709556,0.2501027286052704,0.31496619967795747

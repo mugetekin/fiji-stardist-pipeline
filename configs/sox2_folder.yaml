@@ -1,0 +1,48 @@
+input_path: "C:/data/tiff"
+save_prefix: "C:/projects/fiji-stardist-pipeline/outputs/growth/sox2_growth"
+mode: mip
+rolling_radius: 30
+
+channels:
+  mapping:
+    DAPI: 0
+    Alexa488: 1
+    Cy3: 2
+
+stardist:
+  run: true
+  channel: DAPI
+  model: 2D_versatile_fluo
+  prob_thresh: 0.58
+  nms_thresh: 0.30
+  normalize_percentiles: [2.0, 98.5]
+
+plugins:
+  - stardist_segmentation
+  - organelle_puncta
+  - timeseries_tracking
+
+analysis:
+  run: true
+  export:
+    summary_csv: true
+    counts_overall_csv: true
+    counts_by_region_csv: true
+    per_cell_table_csv: true
+  organelle:
+    channel: "Cy3"
+    min_sigma: 1.5
+    max_sigma: 3.5
+    num_sigma: 5
+    threshold: 0.02
+    overlap: 0.5
+    disc_radius: 2
+  sox2_channel: "Cy3"
+  darkness_channel: "Cy3"
+  threshold_method: "low10p"
+  dark_percentile: 20
+  min_cells_for_regions: 5
+  make_overlay: true
+
+fiji:
+  app_dir: null

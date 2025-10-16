@@ -426,10 +426,20 @@ def analyze_one_prefix(
       - {prefix}_Alexa488_green.jpg
       - {prefix}_Cy3_red.jpg
     """
+    # Adjusted to match filenames produced by nuclei_pipeline.py
     label_path = save_prefix + "_stardist_labels.tif"
-    dapi_path  = find_existing(save_prefix + "_DAPI_blue")
-    alexa_path = find_existing(save_prefix + "_Alexa488_green")
-    cy3_path   = find_existing(save_prefix + "_Cy3_red")
+
+    # use the actual preview filenames
+    dapi_path  = find_existing(save_prefix + "_DAPIcolor")
+    alexa_path = find_existing(save_prefix + "_Alexacolor")
+    cy3_path   = find_existing(save_prefix + "_Cy3color")
+
+    # fallback for any older naming style
+    if not (dapi_path and alexa_path and cy3_path):
+        dapi_path  = dapi_path  or find_existing(save_prefix + "_DAPI_blue")
+        alexa_path = alexa_path or find_existing(save_prefix + "_Alexa488_green")
+        cy3_path   = cy3_path   or find_existing(save_prefix + "_Cy3_red")
+
 
     if not (os.path.exists(label_path) and dapi_path and alexa_path and cy3_path):
         raise FileNotFoundError(
