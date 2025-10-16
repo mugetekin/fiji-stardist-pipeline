@@ -1,44 +1,15 @@
-# Ignore everything in data and outputs by default
-data/**
-outputs/**
-
-# Re-allow the directories themselves
-!data/
-!data/**/
-!outputs/
-!outputs/**/
-
-# Allow selected file types
-!data/**/*.csv
-!data/**/*.tsv
-!data/**/*.txt
-!data/**/*.json
-!outputs/**/*.csv
-!outputs/**/*.html
-!outputs/**/*.png
-!outputs/**/*.jpg
-!outputs/**/*.jpeg
-!outputs/**/*.tif
-!outputs/**/*.tiff
-
-# virtual environments
+# virtual envs
 .venv/
 .venv310/
 
-# temporary configs and logs
+# temp configs and logs
 configs/_tmp_*.yaml
 logs/
 
+# keep outputs folder in repo, but ignore growth data
+outputs/growth/**
+!outputs/growth/.gitkeep
 
-# Optionally allow label TIFs (if needed, use Git LFS)
-!outputs/**/*_stardist_labels.tif
-
-# Ignore notebook checkpoints and cache
-.ipynb_checkpoints/
-__pycache__/
-*.pyc
+# OS junk
 .DS_Store
 Thumbs.db
-
-**/RGBmerge.jpg
-**/report.html
