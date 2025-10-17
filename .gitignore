@@ -11,3 +11,11 @@ outputs/growth/**
 # OS junk
 .DS_Store
 Thumbs.db
+
+# Python cache
+__pycache__/
+*/__pycache__/
+
+# Jupyter autosaves
+.ipynb_checkpoints/
+
