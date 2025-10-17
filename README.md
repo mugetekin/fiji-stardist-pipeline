@@ -119,6 +119,7 @@ If per-sample CSVs already exist (e.g., in `outputs/growth/_examples`), you can 
 
 ```bash
 python -m src.merge_reports --outputs_dir outputs/growth/_examples
+```
 
 ---
 
