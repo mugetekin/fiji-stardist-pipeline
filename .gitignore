@@ -19,3 +19,4 @@ __pycache__/
 # Jupyter autosaves
 .ipynb_checkpoints/
 
+outputs/growth/*
