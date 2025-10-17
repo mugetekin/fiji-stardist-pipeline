@@ -3,3 +3,8 @@
 *.h5 filter=lfs diff=lfs merge=lfs -text
 *.hdf5 filter=lfs diff=lfs merge=lfs -text
 *.zip filter=lfs diff=lfs merge=lfs -text
+
+
+outputs/growth/_examples/report.html linguist-vendored
+outputs/growth/**/* linguist-vendored
+
