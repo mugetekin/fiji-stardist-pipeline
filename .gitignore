@@ -1,14 +1,12 @@
-# virtual envs
 .venv/
 .venv310/
-
-# temp configs and logs
 configs/_tmp_*.yaml
 logs/
 
-# keep outputs folder in repo, but ignore growth data
+# keep outputs folder tracked, but only commit curated examples
 outputs/growth/**
-!outputs/growth/.gitkeep
+!outputs/growth/_examples/**
+!outputs/growth/_examples/
 
 # OS junk
 .DS_Store

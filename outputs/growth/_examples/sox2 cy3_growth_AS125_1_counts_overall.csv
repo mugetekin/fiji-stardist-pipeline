@@ -1,0 +1,2 @@
+Prefix,Total_cells,Alexa_pos_count,Alexa_pos_percent,Cy3_pos_count,Cy3_pos_percent,Coexpress_count,Coexpress_percent,Sox2_channel,Sox2_pos_count,Sox2_pos_percent,DAPI_mean_median,DAPI_mean_mean,Alexa_mean_median,Alexa_mean_mean,Cy3_mean_median,Cy3_mean_mean
+C:/projects/fiji-stardist-pipeline/outputs/growth/_examples/sox2 cy3_growth_AS125_1,277,238,85.92057761732852,241,87.00361010830325,221,79.78339350180505,Cy3,241,87.00361010830325,0.2257062941789627,0.25616476430628277,0.09491776674985886,0.09615728131323945,0.4050971269607544,0.4427347994991158
