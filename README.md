@@ -113,6 +113,15 @@ This will:
 
 ---
 
+### **Step 4 — Generate Merged Report Only**
+
+If per-sample CSVs already exist (e.g., in `outputs/growth/_examples`), you can build a combined report without re-running StarDist:
+
+```bash
+python -m src.merge_reports --outputs_dir outputs/growth/_examples
+
+---
+
 ## Outputs
 
 | File | Description |
