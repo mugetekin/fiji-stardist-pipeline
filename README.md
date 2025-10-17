@@ -27,62 +27,93 @@ A modular **Python pipeline** for quantitative fluorescence microscopy image ana
 git clone https://github.com/mugetekin/fiji-stardist-pipeline.git
 cd fiji-stardist-pipeline
 
-# Create a fresh environment (Conda example)
-conda create -n fiji-stardist python=3.11 -y
-conda activate fiji-stardist
+# Example environment
+py -3.10 -m venv .venv310
+. .venv310/Scripts/activate
 
-# Install dependencies
-pip install -U pip
-pip install -r requirements.txt  # or manually if not provided
-```
-
-Minimal manual install:
-```bash
-pip install numpy pandas scikit-image tifffile matplotlib pyyaml
-# Optional extras
-pip install napari[all]  # for --review mode
-git lfs install
+pip install --upgrade pip
+pip install "numpy<2" "scikit-image==0.21.0" "csbdeep==0.7.4" "stardist==0.8.5"             tensorflow-cpu==2.10.1 tifffile matplotlib pyyaml pandas
 ```
 
 ---
 
-##  Run the Pipeline
+## Run the Pipeline (Single Sample)
 
-Process a dataset:
+Example:
 ```bash
 python -m src.nuclei_pipeline --config configs/example.yaml
 ```
 
 Run specific plugins:
 ```bash
-python -m src.nuclei_pipeline --config configs/example.yaml   --plugins organelle_puncta timeseries_tracking
+python -m src.nuclei_pipeline --config configs/example.yaml --plugins organelle_puncta timeseries_tracking
 ```
 
-Skip all plugins:
-```bash
-python -m src.nuclei_pipeline --config configs/example.yaml --plugins
-```
-
-Open an interactive Napari review:
+Open interactive review (Napari):
 ```bash
 python -m src.nuclei_pipeline --config configs/example.yaml --review
 ```
 
 ---
 
-## Built-in Plugins
-| Plugin | Purpose |
-|--------|----------|
-| `organelle_puncta` | Detects puncta-like organelles using LoG blob detection |
-| `timeseries_tracking` | Tracks labeled cells over time using per-frame labels |
+## Batch Processing (Multiple Images)
 
-Custom plugins can be added easily under `src/plugins/`.
+You can process entire folders of `.tif` or `.tiff` images automatically.  
+The batch system combines three steps:
+
+### **Step 1 — Prepare Input Folder**
+Place all your TIFFs in a folder, e.g.:
+```
+C:\data\tiff\
+├── sox2 cy3_growth_AS124_1.tif
+├── sox2 cy3_growth_AS124_2.tif
+├── sox2 cy3_growth_GP125_1.tif
+...
+```
+
+### **Step 2 — Generate StarDist Labels**
+
+Before running the full analysis, generate segmentation label files once:
+
+```bash
+bash run_batch_from_labels.sh
+```
+
+or manually:
+
+```bash
+find "C:/data/tiff" -maxdepth 1 -type f -iname "*.tif" -print0 |
+while IFS= read -r -d '' f; do
+  stem="$(basename "$f")"; stem="${stem%.*}"
+  python -m src.make_stardist_labels     --input "$(cygpath -m "$f")"     --output "C:/projects/fiji-stardist-pipeline/outputs/growth/${stem}_stardist_labels.tif"     --channel 0 --mode mip --prob_thresh 0.58 --nms_thresh 0.30
+done
+```
+
+Each image will produce its `_stardist_labels.tif` in `outputs/growth/`.
+
+---
+
+### **Step 3 — Batch Analysis via `run_multi.py`**
+
+After labels exist, run all analyses (previews + CSVs + overlays) in one command:
+
+```bash
+python -m src.run_multi   --config configs/sox2_single.yaml   --input_dir "C:/data/tiff"   --outputs_dir "C:/projects/fiji-stardist-pipeline/outputs/growth"   --mode mip   --jobs 1
+```
+
+- `--input_dir` → folder with TIFFs  
+- `--outputs_dir` → destination for all CSVs, overlays, and report  
+- `--mode mip` → use max intensity projection for Z-stacks  
+- `--jobs` → parallel processing threads (use 1–4 depending on memory)
+
+This will:
+- Skip images without labels  
+- Run the full post-analysis (CSV generation, metrics, overlays)  
+- Merge outputs into one HTML report (`outputs/growth/report.html`)
 
 ---
 
 ## Outputs
-
-Each processed sample creates an `outputs/<sample>` folder with:
 
 | File | Description |
 |------|--------------|
@@ -90,10 +121,27 @@ Each processed sample creates an `outputs/<sample>` folder with:
 | `*_summary.csv` | Region-level summary |
 | `*_counts_overall.csv`, `*_counts_by_region.csv` | Compact summaries |
 | `*_overlay.png` | Color-coded overlay (Alexa+, Cy3+, co-expressing) |
+| `_stardist_labels.tif` | Segmentation masks (StarDist output) |
 
 ---
 
-## Tips
-- Keep large TIFFs out of Git with `.gitignore` and Git LFS.
-- Extend analysis by writing your own plugin (see `src/plugins/`).
-- Use batch mode via `src/run_multi.py` for multiple samples.
+## Example Layout (After Batch Run)
+
+```
+outputs/
+├── AP231_1_*                          # Classic single-sample example
+└── growth/
+    ├── sox2 cy3_growth_AS124_1_*      # Previews + CSVs + overlay
+    ├── sox2 cy3_growth_AS124_2_*
+    ├── ...
+    ├── report.html                    # Merged summary report
+    └── _examples/                     # Curated example outputs (kept in Git)
+```
+
+---
+
+## Notes 
+- Use `make_stardist_labels.py` first to generate masks once per dataset.  
+- Always provide flat save prefixes (no trailing folder name) in YAML configs.  
+- `run_multi.py` automatically detects existing labels and performs analysis only.  
+- Heavy batch outputs (like `outputs/growth`) should stay local, not pushed to Git.
