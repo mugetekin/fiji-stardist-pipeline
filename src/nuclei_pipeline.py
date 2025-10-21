@@ -1,4 +1,19 @@
-# src/nuclei_pipeline.py
+"""
+Nuclei preview + colorized export pipeline (DAPI/Alexa/Cy3)
+
+What this does (high level):
+- Loads a multi-channel confocal TIFF (from Fiji, etc.).
+- Selects a z-slice (middle, explicit z index) or computes a MIP.
+- Performs background subtraction (rolling-ball) per channel.
+- Normalizes to [0,1], colorizes (DAPI=Blue, Alexa=Green, Cy3=Red),
+  saves per-channel previews + an RGB merge (JPG).
+- (Optionally) triggers a Napari-based review UI (if installed).
+- (Optionally) runs downstream post-analysis if labels exist.
+
+Inputs can come from CLI flags or a YAML config.
+CLI takes precedence over config; sensible defaults are provided.
+"""
+
 import argparse
 import os
 from pathlib import Path
@@ -11,6 +26,7 @@ from skimage import exposure, img_as_ubyte
 import tifffile
 
 # Prefer imageio for writing; fall back to skimage if needed.
+# Using imageio avoids some legacy warnings and has broad codec support.
 try:
     import imageio.v3 as iio
     _HAS_IMAGEIO = True
@@ -24,34 +40,56 @@ def _normalize01(img: np.ndarray) -> np.ndarray:
     img = img.astype(np.float32)
     vmin, vmax = float(img.min()), float(img.max())
     if vmax <= vmin + 1e-12:
+        # Flat image → return zeros to avoid divide-by-zero.
         return np.zeros_like(img, dtype=np.float32)
     return (img - vmin) / (vmax - vmin)
 
 
 def process_zstack_slice(channel_stack: np.ndarray, z_index="middle", rolling_radius=50) -> np.ndarray:
     """
-    channel_stack: (Z, Y, X)
-    z_index: "middle" | int | None (MIP)
+    Process a single-channel Z stack into a 2D image.
+
+    Parameters
+    ----------
+    channel_stack : np.ndarray
+        Array of shape (Z, Y, X) for a single fluorescence channel.
+    z_index : "middle" | int | None
+        "middle" → pick the central slice,
+        int      → pick that explicit Z,
+        None     → compute Max-Intensity Projection (MIP).
+    rolling_radius : int
+        Radius (in pixels) for rolling-ball background subtraction.
+
+    Returns
+    -------
+    np.ndarray (float32)
+        2D image in [0,1] after background subtraction + rescaling.
     """
     Z = channel_stack.shape[0]
     if z_index == "middle":
         zi = Z // 2
         img = channel_stack[zi]
     elif isinstance(z_index, int):
+        # Clamp to valid range to avoid IndexError.
         zi = max(0, min(Z - 1, z_index))
         img = channel_stack[zi]
     else:  # None => MIP
         img = channel_stack.max(axis=0)
 
-    # background subtraction (rolling ball)
+    # # Background subtraction to remove uneven illumination. (rolling ball)
     bg = rolling_ball(img, radius=rolling_radius)
     img_corr = img - bg
     img_corr[img_corr < 0] = 0.0
+    # Rescale to [0,1] for consistent downstream visualization.
     return exposure.rescale_intensity(img_corr, out_range=(0, 1)).astype(np.float32)
 
 
 def infer_channel_indices(C: int):
-    """Simple assumption: 0=DAPI(Blue), 1=Alexa488(Green), 2=Cy3(Red)."""
+    """
+    Map channel indices to expected dyes (heuristic).
+    Assumes acquisition order: 0=DAPI(Blue), 1=Alexa488(Green), 2=Cy3(Red).
+    If fewer than 3 channels are present, some entries may be None.
+    """
     dapi = 0 if C >= 1 else None
     alexa = 1 if C >= 2 else None
     cy3 = 2 if C >= 3 else None
@@ -59,13 +97,18 @@ def infer_channel_indices(C: int):
 
 
 def _ensure_parent_dir(path: Path):
+    """Create parent directory for a file path if it doesn’t exist."""
     parent = path.parent
     if str(parent) not in ("", "."):
         parent.mkdir(parents=True, exist_ok=True)
 
 
 def _imwrite_safe(path: Path, arr_uint8: np.ndarray):
-    """Write RGB uint8 image via imageio if available, else skimage.io."""
+    """
+    Write an RGB uint8 image to disk.
+    Uses imageio if available; falls back to skimage.io otherwise.
+    Raises RuntimeError with context on failure.
+    """
     _ensure_parent_dir(path)
     try:
         if _HAS_IMAGEIO:
@@ -76,11 +119,12 @@ def _imwrite_safe(path: Path, arr_uint8: np.ndarray):
     except Exception as e:
         raise RuntimeError(f"Failed to save image to '{path}': {e}")
     if not path.exists():
+        # Extra guard for network mounts or silent failures.
         print(f"[WARN] Save reported ok, but file not found on disk: {path}")
 
 
 def _to_uint8(img01: np.ndarray) -> np.ndarray:
-    """[0,1] float -> uint8"""
+    """Convert [0,1] float image to uint8 safely (clipping included)."""
     return img_as_ubyte(np.clip(img01, 0, 1))
 
 
@@ -93,10 +137,10 @@ def show_channels_colorized(dapi, alexa, cy3, save_prefix="TEST", show: bool = F
     imgs, titles = [], []
     saved_paths = []
 
-    # Base path objects
+    # Base path objects (not strictly needed but keeps prints clean).
     base = Path(save_prefix).resolve()
 
-    # DAPI (Blue)
+    # DAPI (Blue) → B channel
     if dapi is not None:
         rgb = np.zeros((*dapi.shape, 3), dtype=np.float32)
         rgb[..., 2] = dapi
@@ -104,7 +148,7 @@ def show_channels_colorized(dapi, alexa, cy3, save_prefix="TEST", show: bool = F
         p = Path(f"{save_prefix}_DAPIcolor.jpg").resolve()
         _imwrite_safe(p, _to_uint8(rgb)); saved_paths.append(p)
 
-    # Alexa (Green)
+    # Alexa488 (Green) → G channel
     if alexa is not None:
         rgb = np.zeros((*alexa.shape, 3), dtype=np.float32)
         rgb[..., 1] = alexa
@@ -112,7 +156,7 @@ def show_channels_colorized(dapi, alexa, cy3, save_prefix="TEST", show: bool = F
         p = Path(f"{save_prefix}_Alexacolor.jpg").resolve()
         _imwrite_safe(p, _to_uint8(rgb)); saved_paths.append(p)
 
-    # Cy3 (Red)
+    # Cy3 (Red) → R channel
     if cy3 is not None:
         rgb = np.zeros((*cy3.shape, 3), dtype=np.float32)
         rgb[..., 0] = cy3
@@ -120,7 +164,7 @@ def show_channels_colorized(dapi, alexa, cy3, save_prefix="TEST", show: bool = F
         p = Path(f"{save_prefix}_Cy3color.jpg").resolve()
         _imwrite_safe(p, _to_uint8(rgb)); saved_paths.append(p)
 
-    # RGB merge
+    # Build an RGB merge in the expected order (R=Cy3, G=Alexa, B=DAPI).
     ref = dapi if dapi is not None else (alexa if alexa is not None else cy3)
     if ref is None:
         raise ValueError("No channels to display; all are None.")
@@ -131,14 +175,14 @@ def show_channels_colorized(dapi, alexa, cy3, save_prefix="TEST", show: bool = F
     if dapi is not None:  merge[..., 2] = dapi
     imgs.append(merge); titles.append("RGB Merge (DAPI=Blue, Alexa=Green, Cy3=Red)")
 
-    # Save merge as JPG (and also as TIFF if you like—commented out)
+    # Save merge as JPG (optionally also as TIFF if needed).
     p_merge_jpg = Path(f"{save_prefix}_RGBmerge.jpg").resolve()
     _imwrite_safe(p_merge_jpg, _to_uint8(merge)); saved_paths.append(p_merge_jpg)
     # p_merge_tif = Path(f"{save_prefix}_RGBmerge.tif").resolve()
     # tifffile.imwrite(str(p_merge_tif), _to_uint8(merge))
     # saved_paths.append(p_merge_tif)
 
-    # display
+    # Create a quick side-by-side figure for visual QC.
     n = len(imgs)
     fig, axes = plt.subplots(1, n, figsize=(4 * n, 4))
     if n == 1:
@@ -149,7 +193,7 @@ def show_channels_colorized(dapi, alexa, cy3, save_prefix="TEST", show: bool = F
         ax.axis("off")
     plt.tight_layout()
     if show:
-        plt.show()
+        plt.show()  # blocking
     else:
         plt.close(fig)
 
