@@ -17,7 +17,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-
+# Helper: Safe CSV reader
 def _read_if_exists(path: Path) -> pd.DataFrame | None:
     try:
         if path.exists():
@@ -26,7 +26,7 @@ def _read_if_exists(path: Path) -> pd.DataFrame | None:
         pass
     return None
 
-
+# Plot helpers – bar, scatter, stacked bar
 def _save_bar(df, x, y, title, out_png):
     plt.figure(figsize=(10, 5))
     plt.bar(df[x].astype(str), df[y].values)
@@ -67,6 +67,8 @@ def _save_stacked_regions(region_df, out_png):
     plt.close()
 
 
+# Convert a local image file to a Base64 data URI for embedding
+# directly in the HTML report (no separate file needed).
 def _img_to_data_uri(path: Path) -> str:
     with open(path, "rb") as f:
         b = f.read()
@@ -75,6 +77,8 @@ def _img_to_data_uri(path: Path) -> str:
     return f"data:{mime};base64,{b64}"
 
 
+# Generate a minimal but clean HTML report combining CSV links
+# and embedded plots.
 def _write_html_report(out_dir: Path, overall_csv: Path | None, regions_csv: Path | None, plot_paths: list[Path]):
     html = []
     html.append("<html><head><meta charset='utf-8'><title>Confocal Batch Report</title>")
@@ -120,14 +124,16 @@ def _write_html_report(out_dir: Path, overall_csv: Path | None, regions_csv: Pat
         f.write("\n".join(html))
     print(f"[report] wrote {out_html}")
 
-
+# Determine batch labels for samples.
+# Either load from a batch map CSV, or infer from sample names.
 def _load_batch_map(batch_map_path: str | None, samples: list[str]) -> pd.DataFrame:
     if batch_map_path and Path(batch_map_path).exists():
         bm = pd.read_csv(batch_map_path)
         if not {"Sample", "Batch"}.issubset(bm.columns):
             raise ValueError("batch_map must have columns: Sample,Batch")
         return bm[["Sample", "Batch"]].drop_duplicates()
-    # heuristic: prefix before first underscore
+    # Heuristic fallback:
+    # If no batch map is given, infer batch as prefix before first underscore
     rows = []
     for s in samples:
         parts = s.split("_")
@@ -136,19 +142,25 @@ def _load_batch_map(batch_map_path: str | None, samples: list[str]) -> pd.DataFr
     return pd.DataFrame(rows)
 
 
+# Perform per-batch normalization across samples.
+# Supports "median_center", "zscore", or "none".
 def _add_batch_and_normalize(all_overall: pd.DataFrame, batch_map: pd.DataFrame, method: str = "median_center") -> pd.DataFrame:
     df = all_overall.copy()
+    # Ensure a "Sample" column exists
     if "Sample" not in df.columns:
         if "Prefix" in df.columns:
             df["Sample"] = df["Prefix"].apply(lambda p: Path(str(p)).name)
         else:
             raise ValueError("Cannot infer Sample column in ALL_counts_overall.csv")
+    # Merge batch info
     df = df.merge(batch_map, on="Sample", how="left")
 
+    # Identify columns to normalize (if they exist)
     norm_cols = [c for c in ["Sox2_pos_percent", "Alexa_pos_percent", "Cy3_pos_percent"] if c in df.columns]
     if not norm_cols:
         return df
 
+    # Median centering
     if method == "median_center":
         for c in norm_cols:
             global_med = df[c].median()
@@ -156,6 +168,8 @@ def _add_batch_and_normalize(all_overall: pd.DataFrame, batch_map: pd.DataFrame,
             for b, sub in df.groupby("Batch"):
                 med = sub[c].median()
                 df.loc[sub.index, c + "_norm"] = sub[c] - med + global_med
+
+    # Z-score normalization
     elif method == "zscore":
         for c in norm_cols:
             df[c + "_norm"] = df[c]
@@ -164,13 +178,14 @@ def _add_batch_and_normalize(all_overall: pd.DataFrame, batch_map: pd.DataFrame,
                 sd = sub[c].std(ddof=1) if len(sub) > 1 else 1.0
                 sd = sd if np.isfinite(sd) and sd > 0 else 1.0
                 df.loc[sub.index, c + "_norm"] = (sub[c] - mu) / sd
+    # no normalization
     elif method == "none":
         pass
     else:
         raise ValueError(f"Unknown normalization method: {method}")
     return df
 
-
+# Main entrypoint
 def main():
     ap = argparse.ArgumentParser(description="Merge per-sample CSVs and write report.html")
     ap.add_argument("--outputs_dir", required=True, help="Directory containing per-sample CSVs")
