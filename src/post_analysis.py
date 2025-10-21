@@ -1,4 +1,22 @@
-# src/post_analysis.py
+"""
+Post-segmentation per-cell analysis for the Fiji–StarDist pipeline.
+
+What this module does (single sample / prefix):
+1) Loads StarDist label image and per-channel previews (DAPI/Alexa/Cy3).
+2) Applies illumination (flatfield) and simple crosstalk correction.
+3) Computes per-cell morphology + intensity statistics.
+4) Calls optional plugin hooks (organelle puncta, time tracking, etc.).
+5) Classifies cells as Alexa+ / Cy3+ via data-driven thresholds.
+6) Assigns regions (Anterior / Marginal) with a darkness heuristic.
+7) Saves:
+   - Per-cell table: {prefix}_per_cell.csv
+   - Region summary: {prefix}_summary.csv
+   - Overlay visualization: {prefix}_overlay.png (optional)
+   - Compact summaries used by the merge step:
+       * {prefix}_counts_overall.csv
+       * {prefix}_counts_by_region.csv
+"""
+
 import os
 import re
 import numpy as np
@@ -15,7 +33,14 @@ import matplotlib.pyplot as plt
 # ---------------------------
 
 def read_gray_float(path: str) -> np.ndarray:
-    """Read image (JPG/PNG/TIF) as grayscale float32 in [0,1]."""
+    """
+    Read image (JPG/PNG/TIF) as grayscale float32 in [0,1].
+
+    Notes:
+    - If the image is RGB(A), we take the first channel only (consistent with the
+      colorized single-channel previews produced earlier).
+    - Converts to float in [0,1] using skimage utilities.
+    """
     img = skio.imread(path)
     if img.ndim == 3:  # RGB(A)
         img = img[..., 0]
@@ -23,17 +48,27 @@ def read_gray_float(path: str) -> np.ndarray:
     return img
 
 def read_label_tif(path: str) -> np.ndarray:
-    """Read label image (uint16/uint32) and return int32 array."""
+    """
+    Read label image (uint16/uint32) and return int32 array.
+
+    - If labels come as a Z-stack (rare case), we max-project to 2D.
+    - Some writers save an extra trailing singleton dim; we squeeze that.
+    """
     lbl = tifread(path)
     if lbl.ndim == 3:
-        # if it's Z-stack labels, max project
+        # If Z-stack labels, reduce to 2D
         lbl = lbl.max(axis=0)
     if lbl.ndim == 3 and lbl.shape[-1] == 1:
         lbl = lbl[..., 0]
     return lbl.astype(np.int32)
 
 def find_existing(path_no_exts: str) -> Optional[str]:
-    """Return an existing file path by trying common image extensions."""
+    """
+    Return an existing file path by trying common image extensions.
+
+    Example:
+        find_existing("outputs/AP231_1_DAPIcolor") → "..._DAPIcolor.jpg" (if present)
+    """
     for ext in (".jpg",".JPG",".jpeg",".JPEG",".png",".PNG",".tif",".tiff",".TIF",".TIFF"):
         p = path_no_exts + ext
         if os.path.exists(p):
@@ -45,13 +80,26 @@ def find_existing(path_no_exts: str) -> Optional[str]:
 # ---------------------------
 
 def region_means_by_label(label_img: np.ndarray, intensity_img: np.ndarray, colname: str) -> pd.DataFrame:
-    """Return DataFrame with per-label mean intensity for the given image."""
+    """
+    Return DataFrame with per-label mean intensity for the given image.
+
+    Columns:
+      - Cell: integer label ID
+      - <colname>: mean intensity for that label in intensity_img
+    """
     props = regionprops_table(label_img.astype(int), intensity_image=intensity_img, properties=("label","mean_intensity"))
     df = pd.DataFrame(props).rename(columns={"label":"Cell", "mean_intensity":colname})
     return df
 
 def compute_threshold_low10p(series: pd.Series) -> Tuple[float,float,float]:
-    """Background ≈ lowest 10% → median + 2*SD → threshold."""
+    """
+    Heuristic threshold based on background estimated from the lowest 10% of values:
+      - background median (bg_med)
+      - background std (bg_sd)
+      - threshold = bg_med + 2 * bg_sd
+
+    Returns: (threshold, bg_med, bg_sd)
+    """
     n = max(1, int(len(series) * 0.10))
     low = series.nsmallest(n)
     bg_med = float(low.median())
@@ -62,7 +110,14 @@ def compute_threshold_low10p(series: pd.Series) -> Tuple[float,float,float]:
     return float(th), bg_med, bg_sd
 
 def compute_threshold_median_plus_sd(series: pd.Series) -> Tuple[float,float,float]:
-    """Median + 1*SD heuristic."""
+    """
+    Simpler heuristic threshold:
+      - median (med)
+      - std (sd)
+      - threshold = med + sd
+
+    Returns: (threshold, med, sd)
+    """
     med = float(series.median())
     sd  = float(series.std(ddof=1)) if len(series) > 1 else 0.0
     th  = med + sd
@@ -74,8 +129,12 @@ def compute_threshold_median_plus_sd(series: pd.Series) -> Tuple[float,float,flo
 
 def region_geometry_features(labels: np.ndarray) -> pd.DataFrame:
     """
-    Basic morphometry per label: area, perimeter, major/minor axis, eccentricity, solidity, etc.
-    Also derives circularity and aspect ratio.
+    Basic morphometry per label: area, perimeter, major/minor axis, eccentricity, solidity, extent.
+    Also derives:
+      - circularity = 4*pi*area / perimeter^2  (robust to scale; 1.0 → circle)
+      - aspect_ratio = major_axis_length / minor_axis_length
+
+    Returns a DataFrame keyed by "Cell".
     """
     props = regionprops_table(
         labels.astype(int),
@@ -87,7 +146,7 @@ def region_geometry_features(labels: np.ndarray) -> pd.DataFrame:
     )
     g = pd.DataFrame(props).rename(columns={"label": "Cell"})
 
-    # Derived metrics
+    # Derived metrics with safe denominators
     # circularity = 4*pi*area / perimeter^2  (robustness: avoid div by zero)
     g["circularity"] = (4.0 * np.pi * g["area"]) / np.maximum(g["perimeter"]**2, 1e-8)
     # aspect_ratio = major / minor
@@ -139,7 +198,18 @@ from skimage.restoration import estimate_sigma
 def flatfield_correct(img: np.ndarray, sigma: float = 50.0) -> np.ndarray:
     """
     Correct uneven illumination by dividing by a blurred 'flatfield' image.
-    sigma: blur radius (adjust based on image size)
+
+    Steps:
+      1) Smooth with a wide Gaussian to estimate illumination profile.
+      2) Avoid division by zero by replacing 0 with median.
+      3) Normalize to 99.5th percentile to keep range ~[0,1].
+    """"""
+    Correct uneven illumination by dividing by a blurred 'flatfield' image.
+
+    Steps:
+      1) Smooth with a wide Gaussian to estimate illumination profile.
+      2) Avoid division by zero by replacing 0 with median.
+      3) Normalize to 99.5th percentile to keep range ~[0,1].
     """
     smooth = gaussian(img, sigma=sigma, preserve_range=True)
     smooth[smooth == 0] = np.median(smooth)
@@ -224,10 +294,15 @@ def assign_regions_with_darkness(
     dark_percentile: float = 20.0,
 ) -> pd.DataFrame:
     """
-    Assign 'Anterior' vs 'Marginal' based on:
-      - Sox2 positivity
-      - Y median split (top vs bottom)
-      - Darkness fraction in the region (top tends to be darker)
+    Assign 'Anterior' vs 'Marginal' using:
+      1) Sox2 positivity mask (ensures biologically relevant split)
+      2) A vertical (Y) median split among Sox2+ above-background cells
+      3) A 'darkness' test: top half should be darker than bottom;
+         if not, swap labels.
+
+    Edge cases:
+      - If too few Sox2+ above background, all Region = "Unknown".
+      - If no Sox2+ in 'Anterior' after split, set all to "Marginal".
     """
     dark_thresh = float(np.percentile(darkness_image, dark_percentile))
     df = df.copy()
@@ -238,10 +313,11 @@ def assign_regions_with_darkness(
         df["Region"] = "Unknown"
         return df
 
+    # Y-median split among Sox2+ (image origin convention: Y increases downward)
     y_thresh = float(pos_cells["Y"].median())
     df["Region"] = np.where(df["Y"] < y_thresh, "Anterior", "Marginal")
 
-    # Fraction of dark cells in each region
+    # Compare 'darkness' fractions; if anterior is not darker, swap
     anterior_mask = df["Region"] == "Anterior"
     marginal_mask = df["Region"] == "Marginal"
     frac_dark_anterior = float((df.loc[anterior_mask, intensity_col_for_darkness] < dark_thresh).mean()) if anterior_mask.any() else 0.0
@@ -251,7 +327,7 @@ def assign_regions_with_darkness(
     if frac_dark_anterior < frac_dark_marginal:
         df["Region"] = np.where(df["Y"] < y_thresh, "Marginal", "Anterior")
 
-    # If no Sox2+ in the (current) 'Anterior', set all to Marginal
+    # If (current) Anterior has zero Sox2+, reassign all as Marginal (failsafe)
     if int(df[df["Region"]=="Anterior"][sox2_flag_col].sum()) == 0:
         df["Region"] = "Marginal"
 
@@ -271,12 +347,15 @@ def make_overlay_png(
 ) -> None:
     """
     Build an RGB overlay:
-      - background: DAPI grayscale
-      - B channel: DAPI
-      - label areas:
-          * red   for B+ (e.g., Cy3+)
-          * green for A+ (e.g., Alexa488+)
-          * magenta for A+ & B+ (co-expression)
+      - Background: grayscale DAPI in all channels (desaturated backdrop)
+      - Within labeled regions:
+          * red     = B+ (e.g., Cy3+)
+          * green   = A+ (e.g., Alexa+)
+          * magenta = A+ & B+ (co-expression)
+
+    Notes:
+    - pos_mask_* are boolean arrays of length (max_label+1) mapping label→positivity.
+    - We dim labeled areas first so colors pop.
     """
     # Normalize DAPI to [0,1] robustly
     dmin = float(dapi_img.min())
