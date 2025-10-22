@@ -28,11 +28,27 @@ git clone https://github.com/mugetekin/fiji-stardist-pipeline.git
 cd fiji-stardist-pipeline
 
 # Example environment
+For Windows:
 py -3.10 -m venv .venv310
 . .venv310/Scripts/activate
 
+on macOS/Linux:
+python3 -m venv .venv310
+source .venv310/bin/activate
+
+
 pip install --upgrade pip
+pip install -r requirements.txt
+
+or manually:
 pip install "numpy<2" "scikit-image==0.21.0" "csbdeep==0.7.4" "stardist==0.8.5"             tensorflow-cpu==2.10.1 tifffile matplotlib pyyaml pandas
+
+# (Optional) Enable GPU Support
+pip install tensorflow==2.10.1
+
+# Test the installation
+python -m src.nuclei_pipeline --help
+
 ```
 
 ---
