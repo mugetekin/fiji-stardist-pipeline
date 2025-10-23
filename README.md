@@ -62,7 +62,9 @@ python -m src.nuclei_pipeline --config configs/example.yaml
 
 Run specific plugins:
 ```bash
-python -m src.nuclei_pipeline --config configs/example.yaml --plugins organelle_puncta timeseries_tracking
+python -m src.nuclei_pipeline \
+  --config configs/example.yaml \
+  --plugins organelle_puncta timeseries_tracking
 ```
 
 Open interactive review (Napari):
@@ -75,7 +77,10 @@ python -m src.nuclei_pipeline --config configs/example.yaml --review
 ## Batch Processing (Multiple Images)
 
 You can process entire folders of `.tif` or `.tiff` images automatically.  
-The batch system combines three steps:
+1. Detects all .tif files in your input folder.
+2. Creates StarDist segmentation labels (if missing).
+3. Runs analysis and plugin processing for each sample.
+4. Saves results (CSVs, overlays, previews) in nested folders.
 
 ### **Step 1 — Prepare Input Folder**
 Place all your TIFFs in a folder, e.g.:
@@ -87,54 +92,62 @@ C:\data\tiff\
 ...
 ```
 
-### **Step 2 — Generate StarDist Labels**
+### **Step 2 — Run the Automated Batch Script**
 
-Before running the full analysis, generate segmentation label files once:
+Simply execute the provided bash script:
 
 ```bash
 bash run_batch_from_labels.sh
 ```
 
-or manually:
+This command will:
+- Create StarDist label images for each .tif (using CPU, quiet mode, and tiling).
+- Run the analysis pipeline (src.nuclei_pipeline) for each sample.
+-Save all outputs to:
 
 ```bash
-find "C:/data/tiff" -maxdepth 1 -type f -iname "*.tif" -print0 |
-while IFS= read -r -d '' f; do
-  stem="$(basename "$f")"; stem="${stem%.*}"
-  python -m src.make_stardist_labels     --input "$(cygpath -m "$f")"     --output "C:/projects/fiji-stardist-pipeline/outputs/growth/${stem}_stardist_labels.tif"     --channel 0 --mode mip --prob_thresh 0.58 --nms_thresh 0.30
-done
+C:/projects/fiji-stardist-pipeline/outputs/growth/<sample_name>/
 ```
 
-Each image will produce its `_stardist_labels.tif` in `outputs/growth/`.
-
+Each folder will contain:
+```bash
+<sample>_stardist_labels.tif
+<sample>_per_cell.csv
+<sample>_summary.csv
+<sample>_counts_overall.csv
+<sample>_counts_by_region.csv
+<sample>_overlay.png
+<sample>_DAPIcolor.jpg
+<sample>_Alexacolor.jpg
+<sample>_Cy3color.jpg
+<sample>_RGBmerge.jpg
+```
 ---
 
-### **Step 3 — Batch Analysis via `run_multi.py`**
+### **Step 3 — (Optional) Clean or Re-run**
 
-After labels exist, run all analyses (previews + CSVs + overlays) in one command:
+If you want to reprocess from scratch:
 
 ```bash
-python -m src.run_multi   --config configs/sox2_single.yaml   --input_dir "C:/data/tiff"   --outputs_dir "C:/projects/fiji-stardist-pipeline/outputs/growth"   --mode mip   --jobs 1
+rm -rf outputs/growth/*
+bash run_batch_from_labels.sh
 ```
 
-- `--input_dir` → folder with TIFFs  
-- `--outputs_dir` → destination for all CSVs, overlays, and report  
-- `--mode mip` → use max intensity projection for Z-stacks  
-- `--jobs` → parallel processing threads (use 1–4 depending on memory)
-
-This will:
-- Skip images without labels  
-- Run the full post-analysis (CSV generation, metrics, overlays)  
-- Merge outputs into one HTML report (`outputs/growth/report.html`)
-
+If you just want to regenerate StarDist labels manually for one file:
+```bash
+python -m src.make_stardist_labels \
+  --input "C:/data/tiff/AP231_1.tif" \
+  --output "C:/projects/fiji-stardist-pipeline/outputs/growth/AP231_1/AP231_1_stardist_labels.tif" \
+  --channel 0 --mode mip --n_tiles 2,2
+```
 ---
 
-### **Step 4 — Generate Merged Report Only**
+### **Step 4 — Combine or Summarize Results (Optional)**
 
-If per-sample CSVs already exist (e.g., in `outputs/growth/_examples`), you can build a combined report without re-running StarDist:
+If you want a merged report across all analyzed samples:
 
 ```bash
-python -m src.merge_reports --outputs_dir outputs/growth/_examples
+python -m src.merge_reports --outputs_dir outputs/growth
 ```
 
 ---
@@ -167,7 +180,16 @@ outputs/
 ---
 
 ## Notes 
-- Use `make_stardist_labels.py` first to generate masks once per dataset.  
-- Always provide flat save prefixes (no trailing folder name) in YAML configs.  
-- `run_multi.py` automatically detects existing labels and performs analysis only.  
-- Heavy batch outputs (like `outputs/growth`) should stay local, not pushed to Git.
+- Use only run_batch_from_labels.sh for batch analysis — it automatically runs both StarDist segmentation and nuclei analysis for all .tif files.
+
+- The script uses CPU-only TensorFlow by default (no GPU setup needed).
+
+- The output structure is nested, meaning each sample gets its own folder:
+outputs/growth/<sample_name>/<sample_name>_*
+
+- You can adjust parameters (e.g., --channel, --mode, --n_tiles) directly inside the script call in run_batch_from_labels.sh.
+
+- src/run_multi.py is no longer used — it can be ignored or archived.
+
+- Heavy outputs in outputs/growth/ should not be committed to GitHub.
+Keep them local or add to .gitignore.
