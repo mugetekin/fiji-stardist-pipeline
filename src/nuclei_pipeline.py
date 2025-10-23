@@ -18,7 +18,7 @@ import argparse
 import os
 from pathlib import Path
 import yaml
-
+import subprocess, sys
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage.restoration import rolling_ball
@@ -353,35 +353,58 @@ def main():
     # Optional post-count analysis
     # ----------------------------
     analysis_cfg = cfg.get("analysis", {}) if isinstance(cfg, dict) else {}
-    
+
     # Merge CLI-provided plugin list into config (overrides YAML)
     if args.plugins is not None:
         analysis_cfg.setdefault("plugins", [])
-        # If user wrote --plugins with no names, that disables all plugins
         analysis_cfg["plugins"] = args.plugins
 
-
-    # Prefix variable used by post_analysis
     prefix = save_prefix
 
     if analysis_cfg.get("run", False):
-        # Require the StarDist label file to exist; otherwise skip gracefully
-        label_path = f"{prefix}_stardist_labels.tif"
-        if not Path(label_path).exists():
+        label_path = Path(f"{prefix}_stardist_labels.tif")
+
+        # NEW: if labels missing but stardist.run is true, generate them first
+        stardist_cfg = (cfg.get("stardist") or {})
+        if (not label_path.exists()) and stardist_cfg.get("run", False):
+            try:
+                # Resolve DAPI channel index from mapping (default 0)
+                ch_map = (cfg.get("channels", {}).get("mapping") or {})
+                dapi_key = stardist_cfg.get("channel", "DAPI")
+                dapi_idx = int(ch_map.get(dapi_key, 0))
+
+                # Decide MIP vs middle from current z selection
+                mode_for_sd = "mip" if (z_index is None) or (z_index == "mip") else "middle"
+
+                cmd = [
+                    sys.executable, "-m", "src.make_stardist_labels",
+                    "--input", str(input_path),                  # already defined above in main()
+                    "--output", str(label_path),
+                    "--channel", str(dapi_idx),
+                    "--mode", mode_for_sd,
+                    "--prob_thresh", str(stardist_cfg.get("prob_thresh", 0.58)),
+                    "--nms_thresh",  str(stardist_cfg.get("nms_thresh", 0.30)),
+                ]
+                print("[stardist] generating labels:", " ".join(cmd))
+                subprocess.run(cmd, check=True)
+            except Exception as e:
+                print(f"[stardist] failed to generate labels automatically: {e}")
+
+        if not label_path.exists():
             print(f"[analysis] skipped: missing label file: {label_path}")
         else:
             try:
-                # lazy import so pipeline works even if post_analysis is absent
                 try:
                     from src.post_analysis import run_analysis
                 except Exception:
-                    from .post_analysis import run_analysis  # if run as a package
+                    from .post_analysis import run_analysis
                 print("[analysis] running post-count analysis…")
                 run_analysis(prefix, analysis_cfg)
             except Exception as e:
                 print(f"[analysis] skipped due to error: {e}")
     else:
         print("[analysis] disabled (analysis.run is false or missing).")
+
 
 
 if __name__ == "__main__":
