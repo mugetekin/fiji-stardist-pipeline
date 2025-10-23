@@ -23,6 +23,11 @@ while IFS= read -r -d '' f; do
 
   mkdir -p "$nested_dir"
 
+# keep TF quiet and on CPU (harmless if also set in Python)
+export CUDA_VISIBLE_DEVICES=-1
+export TF_CPP_MIN_LOG_LEVEL=2
+
+  
   # if you already created flat labels earlier, mirror them to nested
   if [[ -f "$flat_label" && ! -f "$nested_label" ]]; then
     cp -f "$flat_label" "$nested_label"
