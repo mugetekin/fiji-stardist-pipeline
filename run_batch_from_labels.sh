@@ -10,14 +10,11 @@ CONFIG_BASE="configs/sox2_single.yaml"
 mkdir -p "$OUTDIR"
 rm -f configs/_tmp_*.yaml 2>/dev/null || true
 
-# loop every tif/tiff
-find "$INDIR" -maxdepth 1 -type f \( -iname "*.tif" -o -iname "*.tiff" \) -print0 |
+# loop every tif/tiff (handles spaces safely)
 while IFS= read -r -d '' f; do
   stem="$(basename "$f")"; stem="${stem%.*}"
 
-  # prefixes: use the SAME nested scheme that worked for the single image
-  #   nested prefix  = outputs/growth/<stem>/<stem>
-  #   flat   labels  = outputs/growth/<stem>_stardist_labels.tif  (you moved them here)
+  # prefixes: nested save_prefix = outputs/growth/<stem>/<stem>
   in_win=$(cygpath -m "$f")
   nested_dir="${OUTDIR}/${stem}"
   nested_prefix="${nested_dir}/${stem}"
@@ -26,12 +23,22 @@ while IFS= read -r -d '' f; do
 
   mkdir -p "$nested_dir"
 
-  # make sure the nested label exists where post_analysis expects it
+  # if you already created flat labels earlier, mirror them to nested
   if [[ -f "$flat_label" && ! -f "$nested_label" ]]; then
     cp -f "$flat_label" "$nested_label"
   fi
 
-  # compose per-image config
+  # 1) Generate StarDist labels if missing (to the nested path)
+  if [[ ! -f "$nested_label" ]]; then
+    echo "[stardist] creating labels for ${stem} ..."
+    python -m src.make_stardist_labels \
+      --input "$in_win" \
+      --output "$(cygpath -m "$nested_label")" \
+      --channel 0 \
+      --mode mip
+  fi
+
+  # 2) Compose per-image config (pointing save_prefix to the nested prefix)
   yaml="configs/_tmp_${stem}.yaml"
   {
     cat "$CONFIG_BASE"
@@ -44,6 +51,7 @@ while IFS= read -r -d '' f; do
 
   echo ">>> Running ${stem} ..."
   python -m src.nuclei_pipeline --config "$yaml"
-done
+
+done < <(find "$INDIR" -maxdepth 1 -type f \( -iname "*.tif" -o -iname "*.tiff" \) -print0)
 
 echo "DONE."
